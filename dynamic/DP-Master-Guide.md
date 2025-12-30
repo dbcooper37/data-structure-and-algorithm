@@ -61,10 +61,6 @@
 - [Bài tập theo pattern](#bài-tập-theo-pattern)
 - [Lộ trình 4 tuần](#lộ-trình-4-tuần)
 
-## 7. Nguồn
-- [Nguồn trong repo](#nguồn-trong-repo)
-- [Danh sách link tham khảo (source.txt)](#danh-sách-link-tham-khảo-sourcetxt)
-
 ---
 
 # 0. Mở đầu
@@ -1340,30 +1336,6 @@ Tuần 3: String & Advanced Patterns
 Tuần 4: Competition level
 - House Robber III (Tree DP), TSP (Bitmask DP)
 - Digit DP, 1–2 bài CHT/SOS
-
----
-
-# 7. Nguồn
-
-## Nguồn trong repo
-
-Các file đã được gộp nội dung (và khử trùng lặp):
-- `data-structure-and-algorithm/dynamic/DP-Full-Guide.md`
-- `data-structure-and-algorithm/dynamic/DP-Complete-Guide.md`
-- `data-structure-and-algorithm/dynamic/DP-Thinking-Methodology.md`
-- `data-structure-and-algorithm/dynamic/DP-Thinking-Extended.md`
-- `algorithm-and-datastructure/dynamic/C.md`
-
-## Danh sách link tham khảo (source.txt)
-
-- hello-algo: https://www.hello-algo.com/chapter_dynamic_programming
-- labuladong: https://labuladong.online/algo/en/essential-technique/dynamic-programming-framework-2/
-- cp-algorithms: https://cp-algorithms.com/dynamic_programming/intro-to-dp.html
-- itcharge (VN): https://algo.itcharge.cn/08_dynamic_programming/
-
----
-
-Cập nhật: 2025-12-30
 
 ---
 

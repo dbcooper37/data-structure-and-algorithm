@@ -1,5515 +1,4869 @@
-# Advanced System Design Solutions (11-20) - NAVER Interview
+# System Design Interview Guide - NAVER Scale (11-20)
 
-> Comprehensive system design solutions for NAVER interview preparation  
-> Covering 10 essential large-scale systems
-
-## Table of Contents
-
-1. [Q11: Autocomplete System](#11-design-an-autocomplete-system-naver-search-suggestions)
-2. [Q12: Payment Processing](#12-design-a-payment-processing-system-naver-pay)
-3. [Q13: Distributed Cache](#13-design-a-distributed-cache-system)
-4. [Q14: Rate Limiter](#14-design-a-rate-limiter-for-apis)
-5. [Q15: Video Transcoding](#15-design-a-video-transcoding-system)
-6. [Q16: Collaborative Editing](#16-design-a-collaborative-editing-system)
-7. [Q17: Commenting System](#17-design-a-commenting-and-review-system-webtoon-comments--naver-shopping-reviews)
-8. [Q18: Location-Based Service](#18-design-a-location-based-service-naver-maps)
-9. [Q19: Ad Serving](#19-design-an-ad-serving-system-naver-ads)
-10. [Q20: ML Model Serving](#20-design-a-machine-learning-model-serving-system-naver-ai-recs)
+> **Mục tiêu**: Tài liệu này không chỉ cung cấp solutions, mà giúp bạn **TƯ DUY** như một System Design expert.  
+> **Cách sử dụng**: Với mỗi câu hỏi, hãy thử tự thiết kế TRƯỚC khi đọc solution.
 
 ---
 
-## 11. Design an Autocomplete System (NAVER Search Suggestions)
+## Mục Lục
 
-### Requirements
-- 1 tỷ queries/ngày
-- Personalized suggestions based on user history
-- Trending terms support
-- Sub-100ms latency
-- Multilingual input (Korean, English, etc.)
+| # | System | Độ khó | Core Concepts |
+|---|--------|--------|---------------|
+| 11 | [Autocomplete](#11-autocomplete-system) | ⭐⭐⭐ | Trie, Caching, Ranking |
+| 12 | [Payment Processing](#12-payment-processing) | ⭐⭐⭐⭐⭐ | ACID, Idempotency, Saga |
+| 13 | [Distributed Cache](#13-distributed-cache) | ⭐⭐⭐⭐ | Consistent Hashing, Eviction |
+| 14 | [Rate Limiter](#14-rate-limiter) | ⭐⭐⭐ | Token Bucket, Sliding Window |
+| 15 | [Video Transcoding](#15-video-transcoding) | ⭐⭐⭐⭐ | Queue, Workers, HLS |
+| 16 | [Collaborative Editing](#16-collaborative-editing) | ⭐⭐⭐⭐⭐ | OT, CRDT, Conflict Resolution |
+| 17 | [Commenting System](#17-commenting-system) | ⭐⭐⭐ | Fan-out, Moderation, Threading |
+| 18 | [Location-Based Service](#18-location-based-service) | ⭐⭐⭐⭐ | Geohash, Spatial Index |
+| 19 | [Ad Serving](#19-ad-serving) | ⭐⭐⭐⭐⭐ | RTB, Targeting, Fraud |
+| 20 | [ML Model Serving](#20-ml-model-serving) | ⭐⭐⭐⭐ | A/B Testing, Feature Store |
 
-### High-Level Architecture
+---
+
+# Cách Đọc Sâu (Deep Reading Playbook)
+
+> Mục tiêu của phần này: biến việc “đọc tài liệu” thành **quy trình ra quyết định** (decision-making), không phải đọc thuộc kiến trúc.
+
+## 1) 1 trang giấy cho mỗi system (bắt buộc)
+
+Khi đọc bất kỳ câu nào (11–20), bạn luôn trả lời được 7 câu sau (viết ngắn, 1–2 dòng/câu):
+
+1. **SLO/Success metric**: cái gì là “đạt”? (p99 latency, availability, correctness)
+2. **Scale**: QPS/TPS peak? data size? concurrency?
+3. **Hot path**: request đi qua 3–6 bước nào trên critical path?
+4. **State**: state nằm ở đâu? (DB, cache, log, client) và state nào là source-of-truth?
+5. **Invariants**: điều gì tuyệt đối không được sai? (idempotency, ordering, dedupe, money never disappears…)
+6. **Trade-offs**: 2–3 lựa chọn chính và vì sao chọn cái này (consistency vs latency, sync vs async, precompute vs compute-on-read)
+7. **Failures**: 3 failure modes quan trọng nhất + degrade/mitigation
+
+> Quy tắc: Nếu bạn không viết được “1 trang giấy” → bạn đang đọc theo kiểu tham khảo, chưa đọc sâu.
+
+## 2) Checklist đọc sâu theo Phase (đọc là làm)
+
+### Phase 1 (Requirements)
+- Có phân biệt **FR** vs **NFR** chưa?
+- Có hỏi đúng câu “giết hệ thống” chưa? (latency budget, consistency level, burst/offline/multi-region)
+
+### Phase 2 (Capacity)
+- Có ước lượng **peak** (không chỉ average) chưa?
+- Có rút ra hệ quả kiến trúc từ số liệu chưa? (cần cache? cần async? cần sharding?)
+
+### Phase 3 (High-level)
+- Có nói rõ **điểm đặt trách nhiệm** của từng box chưa (vì sao box tồn tại)?
+- Có đường đi request end-to-end (hot path) chưa?
+
+### Phase 4 (Deep dive)
+- Deep dive đúng **bottleneck chính** chưa? (đừng dive vào thứ không quyết định SLO)
+- Có nói rõ **data structure / algorithm / consistency** liên quan chưa?
+
+### Phase 5 (Scaling/Failure/Obs)
+- Có nêu **hot partition**, **retry storm**, **cache stampede**, **regional outage** chưa?
+- Có metrics chứng minh đạt SLO chưa (p95/p99, error budget, lag, hit rate)?
+
+## 3) Bài tập “đọc sâu” (làm 10–15 phút/câu)
+
+Sau khi đọc xong 1 câu, làm 3 bài này:
+
+1) **Vẽ lại kiến trúc từ trí nhớ** (không nhìn tài liệu) trong 5 phút.
+
+2) **Nêu 3 trade-offs** (mỗi trade-off 2 phương án, vì sao chọn).
+
+3) **Game Day mini**: giả lập 2 sự cố và trả lời:
+- Redis/DB down thì degrade thế nào?
+- Một key/doc/content “nóng” đột biến thì xử lý thế nào?
+
+## 4) Ví dụ walkthrough siêu ngắn (Rate Limiter)
+
+- **SLO**: limiter overhead <1ms; không vượt quota; 429 có Retry-After
+- **Hot path**: gateway → Lua EVAL Redis → allow/deny
+- **Invariant**: atomic update (không race)
+- **Trade-off**: Sliding Window Log (accurate) vs Counter (cheaper)
+- **Failures**: Redis timeout → fail-open/closed theo endpoint risk
+- **Metrics**: blocked_total, redis_latency p99, failopen_total
+
+Nếu bạn đọc mỗi câu theo đúng khung này, cảm giác “chưa sâu” sẽ giảm rất nhanh.
+
+---
+
+# 11. Autocomplete System
+
+> **Ví dụ thực tế**: NAVER Search, Google Search suggestions  
+> **Thời gian phỏng vấn**: 45 phút
+
+## 🎯 Phase 1: Understand the Problem (5 phút)
+
+### Clarifying Questions - Những câu hỏi BẮT BUỘC phải hỏi
+
+| Câu hỏi | Tại sao quan trọng | Giả định |
+|---------|-------------------|----------|
+| "Có bao nhiêu users và queries/ngày?" | Xác định scale → ảnh hưởng architecture | 100M users, 1B queries/day |
+| "Latency requirement?" | Real-time cần <100ms, ảnh hưởng caching strategy | p99 < 50ms |
+| "Suggestions cần personalized không?" | Nếu có → cần store user history, phức tạp hơn | Có |
+| "Hỗ trợ ngôn ngữ nào?" | Ảnh hưởng text processing (CJK phức tạp hơn Latin) | Korean, English, Japanese |
+| "Cần handle typos không?" | Edit distance, fuzzy matching | Có nhưng không priority |
+
+### Functional Requirements
+- **FR1**: Khi user gõ, show top 10 suggestions
+- **FR2**: Suggestions ranked by popularity + personalization
+- **FR3**: Hỗ trợ trending queries (real-time)
+- **FR4**: Multi-language support
+
+### Non-Functional Requirements
+- **NFR1**: p99 latency < 50ms (user expectation)
+- **NFR2**: 99.99% availability 
+- **NFR3**: Eventually consistent (ok nếu suggestions hơi outdated)
+
+> 💡 **Interview Tip**: Luôn clarify xong requirements TRƯỚC khi vẽ architecture. Interviewers đánh giá cao việc bạn hỏi đúng câu hỏi.
+
+---
+
+## 📊 Phase 2: Capacity Estimation (5 phút)
+
+### Traffic Estimation
 
 ```
-[User Input]
-      ↓
-[CDN Edge Cache]
-      ↓
-[API Gateway + Load Balancer]
-      ↓
-[Autocomplete Service Cluster]
-      ↓
-   ┌──┴────────┬────────┐
-   ↓           ↓        ↓
-[Trie Cache] [Trending] [Personalization]
-(Redis)      Service    Service (ML)
-   ↓           ↓        ↓
-[Persistent DB (MySQL)]
-   ↓
-[Query Analytics (Kafka)]
+Daily Active Users (DAU): 100M
+Queries per user per day: 10
+Total queries/day: 100M × 10 = 1 Billion
+
+QPS = 1B / 86,400 ≈ 11,600 QPS
+Peak QPS = 11,600 × 3 ≈ 35,000 QPS (peak hours)
 ```
 
-### Core Components
+### Storage Estimation
 
-**1. Data Structures - Trie (Prefix Tree)**
+```
+Số unique queries cần lưu: 100M (estimated)
+Average query length: 20 characters × 2 bytes (UTF-8 avg) = 40 bytes
+Metadata per query: 20 bytes (frequency, timestamp, etc.)
+
+Storage for queries = 100M × 60 bytes = 6GB
+
+User search history (for personalization):
+- 100M users × 100 recent searches × 40 bytes = 400GB
+```
+
+### Bandwidth
+
+```
+Request size: ~100 bytes (query + metadata)
+Response size: 10 suggestions × 50 chars = 500 bytes
+
+Incoming: 35,000 × 100 bytes = 3.5 MB/s
+Outgoing: 35,000 × 500 bytes = 17.5 MB/s
+```
+
+### 📐 Detailed Capacity Formulas
+
+```python
+# Capacity Estimation Calculator
+
+class AutocompleteCapacityEstimator:
+    """
+    Công thức tính capacity cho Autocomplete System.
+    Sử dụng trong interview để show structured thinking.
+    """
+    
+    def __init__(self):
+        # Input parameters
+        self.dau = 100_000_000           # Daily Active Users
+        self.queries_per_user = 10       # Searches per user per day
+        self.peak_factor = 3             # Peak vs average ratio
+        self.cache_hit_rate = 0.80       # CDN + Redis hit rate
+        self.replication_factor = 3      # Data replication
+        self.retention_days = 365        # History retention
+        
+    def calculate_qps(self):
+        """
+        QPS Calculation
+        ===============
+        Base: (DAU × queries_per_user) / seconds_per_day
+        Peak: Base × peak_factor
+        After cache: Peak × (1 - cache_hit_rate)
+        """
+        seconds_per_day = 86_400
+        
+        base_qps = (self.dau * self.queries_per_user) / seconds_per_day
+        peak_qps = base_qps * self.peak_factor
+        backend_qps = peak_qps * (1 - self.cache_hit_rate)
+        
+        return {
+            'base_qps': int(base_qps),           # ~11,600
+            'peak_qps': int(peak_qps),           # ~35,000
+            'backend_qps': int(backend_qps),     # ~7,000 (sau cache)
+        }
+    
+    def calculate_storage(self):
+        """
+        Storage Breakdown
+        =================
+        1. Query corpus: unique queries × avg size
+        2. User history: users × history_size × query_size
+        3. Trie structure: ~10x raw query size (với pointers)
+        4. Indexes: ~20% của data size
+        """
+        unique_queries = 100_000_000
+        avg_query_bytes = 40              # 20 chars × 2 bytes UTF-8
+        metadata_bytes = 60               # frequency, language, timestamp
+        
+        # Base storage
+        query_corpus = unique_queries * (avg_query_bytes + metadata_bytes)
+        
+        # User history
+        users = self.dau
+        history_per_user = 100
+        user_history = users * history_per_user * avg_query_bytes
+        
+        # Trie overhead (pointers, node metadata)
+        trie_multiplier = 10
+        trie_storage = unique_queries * avg_query_bytes * trie_multiplier
+        
+        # Total with replication
+        total_raw = query_corpus + user_history + trie_storage
+        total_replicated = total_raw * self.replication_factor
+        
+        return {
+            'query_corpus_gb': query_corpus / (1024**3),     # ~10GB
+            'user_history_gb': user_history / (1024**3),     # ~400GB
+            'trie_storage_gb': trie_storage / (1024**3),     # ~40GB
+            'total_raw_gb': total_raw / (1024**3),           # ~450GB
+            'total_replicated_gb': total_replicated / (1024**3), # ~1.35TB
+        }
+    
+    def calculate_memory(self):
+        """
+        Memory Requirements
+        ===================
+        Hot data cần fit in RAM:
+        - Top 10M queries (hot): 10M × 100 bytes = 1GB
+        - Trie nodes: ~40GB (đã tính ở trên)
+        - User sessions: 1M concurrent × 1KB = 1GB
+        """
+        hot_queries = 10_000_000
+        bytes_per_query = 100
+        hot_data = hot_queries * bytes_per_query
+        
+        concurrent_users = 1_000_000
+        session_size = 1024  # 1KB per session
+        session_memory = concurrent_users * session_size
+        
+        trie_memory = 40 * (1024**3)  # 40GB for trie
+        
+        total_memory = hot_data + session_memory + trie_memory
+        
+        return {
+            'hot_data_gb': hot_data / (1024**3),
+            'session_memory_gb': session_memory / (1024**3),
+            'trie_memory_gb': trie_memory / (1024**3),
+            'total_memory_gb': total_memory / (1024**3),
+            'redis_nodes_needed': int(total_memory / (64 * 1024**3)) + 1,  # 64GB per node
+        }
+    
+    def calculate_bandwidth(self):
+        """
+        Network Bandwidth
+        =================
+        Ingress: QPS × request_size
+        Egress: QPS × response_size
+        Internal: Replication traffic between nodes
+        """
+        peak_qps = 35_000
+        request_size = 100     # bytes
+        response_size = 500    # 10 suggestions × 50 chars
+        
+        ingress_mbps = (peak_qps * request_size * 8) / (1024 * 1024)
+        egress_mbps = (peak_qps * response_size * 8) / (1024 * 1024)
+        
+        # Internal replication: 10% of write traffic × replication_factor
+        write_ratio = 0.01  # 1% writes
+        internal_mbps = egress_mbps * write_ratio * self.replication_factor
+        
+        return {
+            'ingress_mbps': ingress_mbps,      # ~27 Mbps
+            'egress_mbps': egress_mbps,        # ~134 Mbps
+            'internal_mbps': internal_mbps,    # ~4 Mbps
+            'total_mbps': ingress_mbps + egress_mbps + internal_mbps,
+        }
+
+# Usage in interview:
+estimator = AutocompleteCapacityEstimator()
+print("QPS:", estimator.calculate_qps())
+print("Storage:", estimator.calculate_storage())
+print("Memory:", estimator.calculate_memory())
+print("Bandwidth:", estimator.calculate_bandwidth())
+```
+
+### Summary
+
+| Metric | Value | Interpretation |
+|--------|-------|----------------|
+| QPS | 35K peak | Cần distributed system |
+| Storage | ~500GB | Fits in memory cluster |
+| Bandwidth | 20 MB/s | Not a bottleneck |
+| Latency | <50ms | Cần heavy caching |
+
+### 🗄️ Database Schema
+
+```sql
+-- =====================================================
+-- AUTOCOMPLETE SYSTEM DATABASE SCHEMA
+-- =====================================================
+
+-- 1. Query Statistics Table (source of truth)
+CREATE TABLE query_stats (
+    id BIGSERIAL PRIMARY KEY,
+    query_text VARCHAR(500) NOT NULL,
+    query_hash CHAR(32) NOT NULL,           -- MD5 for deduplication
+    language VARCHAR(10) NOT NULL DEFAULT 'ko',
+    frequency BIGINT NOT NULL DEFAULT 1,
+    daily_frequency INT NOT NULL DEFAULT 0,  -- For trending
+    last_searched_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    
+    -- Index for prefix search fallback (when Redis unavailable)
+    -- Sử dụng text_pattern_ops cho LIKE 'prefix%' queries
+    CONSTRAINT uq_query_hash UNIQUE (query_hash)
+);
+
+-- Indexes cho query_stats
+CREATE INDEX idx_query_prefix ON query_stats 
+    USING btree (query_text varchar_pattern_ops);
+CREATE INDEX idx_query_frequency ON query_stats (frequency DESC);
+CREATE INDEX idx_query_daily ON query_stats (language, daily_frequency DESC);
+CREATE INDEX idx_query_updated ON query_stats (updated_at);
+
+-- Partial index cho top queries (most queried)
+CREATE INDEX idx_top_queries ON query_stats (frequency DESC) 
+    WHERE frequency > 1000;
+
+
+-- 2. User Search History (for personalization)
+CREATE TABLE user_search_history (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    query_text VARCHAR(500) NOT NULL,
+    language VARCHAR(10) NOT NULL,
+    clicked_position INT,                    -- Which suggestion was clicked (0-9)
+    search_timestamp TIMESTAMP NOT NULL DEFAULT NOW(),
+    device_type VARCHAR(20),                 -- mobile/desktop/tablet
+    location_country CHAR(2),                -- ISO country code
+    
+    -- Partition by month for efficient cleanup
+    CONSTRAINT pk_user_history PRIMARY KEY (id, search_timestamp)
+) PARTITION BY RANGE (search_timestamp);
+
+-- Create partitions for each month
+CREATE TABLE user_search_history_2024_01 
+    PARTITION OF user_search_history 
+    FOR VALUES FROM ('2024-01-01') TO ('2024-02-01');
+-- ... more partitions
+
+-- Indexes cho user history
+CREATE INDEX idx_user_history_user ON user_search_history (user_id, search_timestamp DESC);
+CREATE INDEX idx_user_history_query ON user_search_history (user_id, query_text);
+
+
+-- 3. Trending Queries (materialized, updated every hour)
+CREATE TABLE trending_queries (
+    id SERIAL PRIMARY KEY,
+    query_text VARCHAR(500) NOT NULL,
+    language VARCHAR(10) NOT NULL,
+    trend_score FLOAT NOT NULL,              -- Calculated score
+    hour_bucket TIMESTAMP NOT NULL,          -- Which hour this belongs to
+    query_count INT NOT NULL,                -- Raw count for this hour
+    velocity FLOAT,                          -- Rate of increase
+    
+    CONSTRAINT uq_trending UNIQUE (query_text, language, hour_bucket)
+);
+
+CREATE INDEX idx_trending_score ON trending_queries (language, hour_bucket, trend_score DESC);
+
+
+-- 4. Blocked/Offensive Terms (for filtering)
+CREATE TABLE blocked_terms (
+    id SERIAL PRIMARY KEY,
+    term VARCHAR(200) NOT NULL,
+    language VARCHAR(10) NOT NULL,
+    block_type VARCHAR(20) NOT NULL,         -- 'exact', 'contains', 'regex'
+    reason VARCHAR(500),
+    created_by VARCHAR(100),
+    created_at TIMESTAMP DEFAULT NOW(),
+    
+    CONSTRAINT uq_blocked_term UNIQUE (term, language)
+);
+
+CREATE INDEX idx_blocked_terms ON blocked_terms (language, term);
+```
+
+### 🔄 Sequence Diagram - Request Flow
+
+```
+┌──────┐          ┌─────┐          ┌───────────┐          ┌───────┐          ┌────────┐
+│Client│          │ CDN │          │API Gateway│          │Service│          │  Redis │
+└──┬───┘          └──┬──┘          └─────┬─────┘          └───┬───┘          └───┬────┘
+   │                 │                    │                    │                  │
+   │ GET /auto?q=nav │                    │                    │                  │
+   │────────────────>│                    │                    │                  │
+   │                 │                    │                    │                  │
+   │                 │ Cache check        │                    │                  │
+   │                 │ (prefix: "nav")    │                    │                  │
+   │                 │                    │                    │                  │
+   ├─────────────────┼─ [CACHE HIT] ─────>│                    │                  │
+   │                 │                    │                    │                  │
+   │<────────────────┼────────────────────┤                    │                  │
+   │ 200 OK [cached] │                    │                    │                  │
+   │                 │                    │                    │                  │
+   ├─────────────────┼─ [CACHE MISS] ────>│                    │                  │
+   │                 │                    │                    │                  │
+   │                 │                    │ Rate limit check   │                  │
+   │                 │                    │───────────────────>│                  │
+   │                 │                    │                    │                  │
+   │                 │                    │<───────────────────│ OK               │
+   │                 │                    │                    │                  │
+   │                 │                    │ Forward request    │                  │
+   │                 │                    │───────────────────>│                  │
+   │                 │                    │                    │                  │
+   │                 │                    │                    │ GET autocomplete:│
+   │                 │                    │                    │ ko:nav          │
+   │                 │                    │                    │─────────────────>│
+   │                 │                    │                    │                  │
+   │                 │                    │                    │<─────────────────│
+   │                 │                    │                    │ [suggestions]    │
+   │                 │                    │                    │                  │
+   │                 │                    │                    │ GET trending:ko  │
+   │                 │                    │                    │─────────────────>│
+   │                 │                    │                    │                  │
+   │                 │                    │                    │<─────────────────│
+   │                 │                    │                    │ [trending]       │
+   │                 │                    │                    │                  │
+   │                 │                    │                    │ GET user:123:    │
+   │                 │                    │                    │ history         │
+   │                 │                    │                    │─────────────────>│
+   │                 │                    │                    │                  │
+   │                 │                    │                    │<─────────────────│
+   │                 │                    │                    │ [personalized]   │
+   │                 │                    │                    │                  │
+   │                 │                    │                    │ Merge & Rank     │
+   │                 │                    │                    │ ┌──────────────┐ │
+   │                 │                    │                    │ │ 1.personal[0]│ │
+   │                 │                    │                    │ │ 2.personal[1]│ │
+   │                 │                    │                    │ │ 3.base[0-4]  │ │
+   │                 │                    │                    │ │ 4.trending[0]│ │
+   │                 │                    │                    │ └──────────────┘ │
+   │                 │                    │                    │                  │
+   │                 │                    │<───────────────────│ Response         │
+   │                 │                    │                    │                  │
+   │                 │ Cache response     │                    │                  │
+   │                 │<───────────────────│                    │                  │
+   │                 │ TTL: 5 min         │                    │                  │
+   │                 │                    │                    │                  │
+   │<────────────────│                    │                    │                  │
+   │ 200 OK          │                    │                    │                  │
+   │ [suggestions]   │                    │                    │                  │
+```
+
+### ⚠️ Failure Scenarios & Handling
+
+| Failure | Impact | Detection | Mitigation |
+|---------|--------|-----------|------------|
+| **Redis Down** | No suggestions | Health check fails | Fallback to PostgreSQL LIKE query |
+| **Trie Corruption** | Wrong/no suggestions | Checksum mismatch | Rebuild from DB, alert oncall |
+| **CDN Outage** | All traffic hits origin | CDN health endpoint | DNS failover to backup CDN |
+| **Hot Partition** | One shard overloaded | CPU/latency spike | Replicate hot keys to all nodes |
+| **Trending Spike** | Celebrity/news event | QPS anomaly | Auto-scale, rate limit heavy users |
+
+```python
+class AutocompleteServiceWithFallback:
+    """
+    Production-grade service với multiple fallbacks.
+    """
+    
+    def __init__(self):
+        self.redis_primary = redis.Redis(host='redis-primary')
+        self.redis_replica = redis.Redis(host='redis-replica')
+        self.db = PostgresPool()
+        self.local_cache = TTLCache(maxsize=10000, ttl=60)
+        self.circuit_breaker = CircuitBreaker(
+            failure_threshold=5,
+            recovery_timeout=30
+        )
+    
+    async def get_suggestions(self, prefix: str, user_id: str) -> List[str]:
+        """
+        Fallback chain:
+        1. Local cache (in-memory)
+        2. Redis primary
+        3. Redis replica (read-only)
+        4. PostgreSQL (degraded mode)
+        5. Static popular queries (emergency)
+        """
+        
+        # Level 1: Local cache
+        cache_key = f"{prefix}:{user_id}"
+        if cache_key in self.local_cache:
+            metrics.incr("autocomplete.cache.local_hit")
+            return self.local_cache[cache_key]
+        
+        # Level 2: Redis with circuit breaker
+        if self.circuit_breaker.is_closed():
+            try:
+                result = await self._query_redis(prefix, user_id)
+                self.local_cache[cache_key] = result
+                return result
+            except RedisError as e:
+                self.circuit_breaker.record_failure()
+                logger.error(f"Redis error: {e}")
+        
+        # Level 3: PostgreSQL fallback
+        try:
+            result = await self._query_postgres(prefix)
+            metrics.incr("autocomplete.fallback.postgres")
+            return result
+        except Exception as e:
+            logger.error(f"PostgreSQL error: {e}")
+        
+        # Level 4: Static fallback
+        metrics.incr("autocomplete.fallback.static")
+        return self._get_static_suggestions(prefix)
+    
+    async def _query_redis(self, prefix: str, user_id: str) -> List[str]:
+        """Query Redis with timeout."""
+        async with timeout(50):  # 50ms timeout
+            base = await self.redis_primary.zrevrange(
+                f"autocomplete:{prefix}", 0, 9
+            )
+            return base
+    
+    async def _query_postgres(self, prefix: str) -> List[str]:
+        """Fallback to PostgreSQL - slower but reliable."""
+        query = """
+            SELECT query_text 
+            FROM query_stats 
+            WHERE query_text LIKE $1 
+            ORDER BY frequency DESC 
+            LIMIT 10
+        """
+        rows = await self.db.fetch(query, f"{prefix}%")
+        return [row['query_text'] for row in rows]
+    
+    def _get_static_suggestions(self, prefix: str) -> List[str]:
+        """Emergency fallback - hardcoded popular queries."""
+        popular = [
+            "naver", "naver map", "naver news", 
+            "naver webtoon", "naver shopping"
+        ]
+        return [q for q in popular if q.startswith(prefix)][:10]
+```
+
+### 🌍 Real-World Case Study: Google Search Autocomplete
+
+| Aspect | Google's Approach | Learning |
+|--------|-------------------|----------|
+| **Scale** | 8.5B searches/day | Need extreme caching |
+| **Latency** | <100ms global | Edge servers in 200+ locations |
+| **Personalization** | Based on search history, location, trending | Balance privacy vs relevance |
+| **Offensive filtering** | ML + human review | Can't rely on blocklist alone |
+| **Trending** | Real-time với streaming | Kafka/Flink for freshness |
+
+**Key Takeaways:**
+1. **Cache at every layer** - CDN, regional, local
+2. **Precompute when possible** - Don't compute rankings on every request
+3. **Degrade gracefully** - Always have a fallback
+4. **Monitor everything** - Latency percentiles, cache hit rates, error rates
+
+> 💡 **Interview Tip**: Không cần tính chính xác 100%. Interviewers muốn thấy bạn có thể estimate reasonable numbers và understand implications.
+
+---
+
+## 🏗️ Phase 3: High-Level Design (10 phút)
+
+### Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         CLIENTS                                  │
+│              (Web Browser, Mobile App, API)                      │
+└─────────────────────────────┬───────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    CDN / EDGE CACHE                              │
+│   • Cache popular prefixes ("nav", "naver", "네이버")            │
+│   • 80% hit rate → Giảm load xuống 7K QPS                       │
+└─────────────────────────────┬───────────────────────────────────┘
+                              │ Cache miss
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    API GATEWAY                                   │
+│   • Rate limiting (per user/IP)                                  │
+│   • Authentication                                               │
+│   • Request routing                                              │
+└─────────────────────────────┬───────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                AUTOCOMPLETE SERVICE CLUSTER                      │
+│   ┌────────────┐ ┌────────────┐ ┌────────────┐                  │
+│   │  Service   │ │  Service   │ │  Service   │  (Stateless)     │
+│   │  Instance  │ │  Instance  │ │  Instance  │                  │
+│   └─────┬──────┘ └─────┬──────┘ └─────┬──────┘                  │
+│         │              │              │                          │
+│         └──────────────┼──────────────┘                          │
+│                        │                                         │
+└────────────────────────┼────────────────────────────────────────┘
+                         │
+        ┌────────────────┼────────────────┐
+        │                │                │
+        ▼                ▼                ▼
+┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+│   TRIE       │ │  TRENDING    │ │ PERSONALIZE  │
+│   SERVICE    │ │  SERVICE     │ │ SERVICE      │
+│              │ │              │ │              │
+│ • In-memory  │ │ • Streaming  │ │ • ML ranking │
+│   Trie       │ │   from Kafka │ │ • User prefs │
+│ • Top-K per  │ │ • Sliding    │ │              │
+│   prefix     │ │   window     │ │              │
+└──────┬───────┘ └──────┬───────┘ └──────┬───────┘
+       │                │                │
+       │                │                │
+       ▼                ▼                ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                     DATA LAYER                                    │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐               │
+│  │   Redis     │  │   Kafka     │  │  PostgreSQL │               │
+│  │   Cluster   │  │   (Events)  │  │  (Source)   │               │
+│  │             │  │             │  │             │               │
+│  │ • Trie data │  │ • Query     │  │ • Query     │               │
+│  │ • User hist │  │   logs      │  │   stats     │               │
+│  │ • Trending  │  │ • Click     │  │ • User data │               │
+│  └─────────────┘  │   events    │  └─────────────┘               │
+│                   └─────────────┘                                 │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### Component Responsibilities
+
+| Component | Responsibility | Why this design? |
+|-----------|---------------|------------------|
+| **CDN Edge** | Cache top prefixes | 80% queries là popular → giảm 80% load |
+| **API Gateway** | Rate limit, auth | Protect backend từ abuse |
+| **Autocomplete Service** | Merge results | Stateless → easy scale |
+| **Trie Service** | Prefix matching | O(k) lookup, k = prefix length |
+| **Trending Service** | Real-time hot queries | Streaming cho freshness |
+| **Personalization** | User-specific ranking | Tăng relevance |
+
+### Data Flow
+
+```
+1. User types "nav" 
+   → CDN cache check (HIT? return immediately)
+   
+2. Cache MISS → API Gateway 
+   → Rate limit check → Auth
+
+3. Autocomplete Service receives request
+   → Parallel calls to:
+     a) Trie Service: Get top 20 by frequency for "nav"
+     b) Trending Service: Get top 5 trending starting with "nav"
+     c) Personalization: Get user's recent "nav*" searches
+
+4. Merge results:
+   - 2 personalized (highest priority)
+   - 5 from trie (popular)
+   - 3 trending
+   → Deduplicate → Return top 10
+
+5. Log query to Kafka for analytics
+```
+
+> 💡 **Interview Tip**: Giải thích TẠI SAO mỗi component tồn tại. Đừng chỉ vẽ diagram mà không giải thích reasoning.
+
+---
+
+## 🔬 Phase 4: Deep Dive (15 phút)
+
+### 4.1 Trie Data Structure - Tại sao chọn Trie?
+
+**So sánh alternatives:**
+
+| Approach | Time Complexity | Space | Pros | Cons |
+|----------|----------------|-------|------|------|
+| **Trie** | O(k) lookup | O(n×m) | Fast prefix, easy suggestions | Memory heavy |
+| **Hash Table** | O(1) exact | O(n) | Simple | No prefix support |
+| **B-Tree / DB Index** | O(log n) | Disk | Persistent | Slower than memory |
+| **Elasticsearch** | O(log n) | Varies | Full-text, fuzzy | Complex, slower |
+
+**Quyết định**: Dùng **Trie in Redis** vì:
+- Prefix lookup O(k) - đủ nhanh cho <50ms
+- Fit in memory (6GB data)
+- Redis Sorted Set hỗ trợ ranking tự nhiên
+
+**Trie với Caching tại mỗi node:**
 
 ```python
 class TrieNode:
+    """
+    Mỗi node cache top-10 suggestions để tránh DFS mỗi query.
+    Trade-off: Memory tăng 10x nhưng lookup O(k) thay vì O(n).
+    
+    Memory: 100M queries × 10 suggestions × 40 bytes = 40GB
+    → Chấp nhận được cho Redis Cluster
+    """
     def __init__(self):
-        self.children = {}
-        self.is_end_of_word = False
+        self.children = {}          # char -> TrieNode
+        self.is_end = False
         self.frequency = 0
-        self.suggestions = []  # Top 10 suggestions cached at node
+        self.top_suggestions = []   # Cached top 10 for this prefix
         
-class AutocompleteTrie:
-    def __init__(self):
-        self.root = TrieNode()
-    
-    def insert(self, word, frequency):
+class Trie:
+    def search(self, prefix: str) -> List[str]:
+        """
+        O(k) complexity - chỉ traverse k characters
+        Không cần DFS nhờ cached suggestions
+        """
         node = self.root
-        for char in word.lower():
-            if char not in node.children:
-                node.children[char] = TrieNode()
-            node = node.children[char]
-        
-        node.is_end_of_word = True
-        node.frequency = frequency
-        
-        # Update suggestions cache at each node
-        self._update_suggestions_cache(word)
-    
-    def search_prefix(self, prefix, limit=10):
-        node = self.root
-        
-        # Navigate to prefix node
         for char in prefix.lower():
             if char not in node.children:
-                return []
+                return []  # No matches
             node = node.children[char]
         
-        # Return cached suggestions at this node
-        if node.suggestions:
-            return node.suggestions[:limit]
-        
-        # Otherwise, DFS to collect suggestions
-        return self._collect_suggestions(node, prefix, limit)
-    
-    def _collect_suggestions(self, node, prefix, limit):
-        suggestions = []
-        
-        if node.is_end_of_word:
-            suggestions.append((prefix, node.frequency))
-        
-        # DFS through children
-        for char, child_node in node.children.items():
-            suggestions.extend(
-                self._collect_suggestions(child_node, prefix + char, limit)
-            )
-        
-        # Sort by frequency and return top N
-        suggestions.sort(key=lambda x: x[1], reverse=True)
-        return [word for word, freq in suggestions[:limit]]
-    
-    def _update_suggestions_cache(self, word):
-        # Cache top suggestions at each prefix node
-        node = self.root
-        for i in range(len(word)):
-            prefix = word[:i+1]
-            char = word[i].lower()
-            
-            if char in node.children:
-                node = node.children[char]
-                # Recalculate top suggestions for this node
-                node.suggestions = self._collect_suggestions(node, prefix, 10)
+        # Return cached suggestions - O(1)
+        return node.top_suggestions[:10]
 ```
 
-**2. Autocomplete Service Implementation**
+### 4.2 Ranking Algorithm
 
-```python
-from flask import Flask, request, jsonify
-import redis
-import json
+**Scoring Formula:**
 
-app = Flask(__name__)
-redis_client = redis.Redis(host='localhost', port=6379, decode_responses=True)
+```
+score = α × popularity + β × recency + γ × personalization
 
-@app.route('/autocomplete', methods=['GET'])
-def autocomplete():
-    prefix = request.args.get('q', '').strip()
-    user_id = request.args.get('user_id')
-    language = request.args.get('lang', 'ko')
-    
-    if len(prefix) < 2:
-        return jsonify([])
-    
-    # 1. Check cache
-    cache_key = f"autocomplete:{language}:{prefix}"
-    cached = redis_client.get(cache_key)
-    
-    if cached:
-        suggestions = json.loads(cached)
-        return jsonify(suggestions)
-    
-    # 2. Get base suggestions from trie
-    base_suggestions = get_trie_suggestions(prefix, language)
-    
-    # 3. Mix with trending
-    trending = get_trending_suggestions(prefix, language)
-    
-    # 4. Add personalized if user logged in
-    if user_id:
-        personalized = get_personalized_suggestions(user_id, prefix)
-        base_suggestions = merge_suggestions(base_suggestions, personalized, trending)
-    else:
-        base_suggestions = merge_suggestions(base_suggestions, trending)
-    
-    # 5. Cache result
-    redis_client.setex(cache_key, 300, json.dumps(base_suggestions))  # 5 min TTL
-    
-    # 6. Log query for analytics
-    log_query(user_id, prefix, language)
-    
-    return jsonify(base_suggestions)
+Trong đó:
+- popularity = log(query_count + 1)  # Log để giảm bias cho super popular
+- recency = exp(-λ × hours_ago)       # Decay function
+- personalization = user_affinity     # ML model score
 
-def get_trie_suggestions(prefix, language):
-    # Query from Redis trie or fallback to DB
-    trie_key = f"trie:{language}"
-    
-    # In production, trie is loaded in memory
-    # For demo, query from sorted set
-    suggestions = redis_client.zrevrangebyscore(
-        f"suggestions:{language}:{prefix}",
-        '+inf', '-inf',
-        start=0, num=10,
-        withscores=False
-    )
-    
-    return suggestions
-
-def get_trending_suggestions(prefix, language):
-    # Get trending queries from last 24 hours
-    trending_key = f"trending:{language}:{get_current_hour()}"
-    
-    trending = redis_client.zrevrange(trending_key, 0, 9, withscores=True)
-    
-    # Filter by prefix
-    filtered = [
-        query for query, score in trending 
-        if query.lower().startswith(prefix.lower())
-    ]
-    
-    return filtered[:3]
-
-def get_personalized_suggestions(user_id, prefix):
-    # Get user's search history
-    history_key = f"user_history:{user_id}"
-    
-    history = redis_client.zrevrange(history_key, 0, 99)
-    
-    # Filter by prefix
-    matches = [
-        query for query in history 
-        if query.lower().startswith(prefix.lower())
-    ]
-    
-    return matches[:3]
-
-def merge_suggestions(base, personalized=None, trending=None):
-    # Merge with weights
-    result = []
-    
-    # Add personalized first (higher priority)
-    if personalized:
-        result.extend(personalized[:2])
-    
-    # Add base suggestions
-    result.extend(base[:7])
-    
-    # Add trending
-    if trending:
-        result.extend(trending[:1])
-    
-    # Deduplicate while preserving order
-    seen = set()
-    unique_result = []
-    for item in result:
-        if item not in seen:
-            seen.add(item)
-            unique_result.append(item)
-    
-    return unique_result[:10]
-
-def log_query(user_id, query, language):
-    # Async log to Kafka for analytics
-    event = {
-        'user_id': user_id,
-        'query': query,
-        'language': language,
-        'timestamp': time.time()
-    }
-    
-    # In production: kafka_producer.send('autocomplete_queries', event)
-    pass
+Weights (tunable):
+- α = 0.5 (popularity quan trọng nhất)
+- β = 0.3 (recency cho trending)
+- γ = 0.2 (personalization)
 ```
 
-**3. Trending Calculation (Streaming)**
+**Tại sao dùng log cho popularity?**
+- Tránh "winner takes all" - query có 1B searches không nên dominant hoàn toàn
+- Google Search cũng dùng logarithmic scaling
 
-```python
-from pyspark.streaming import StreamingContext
-from pyspark.streaming.kafka import KafkaUtils
+### 4.3 Caching Strategy
 
-def calculate_trending_queries(spark_context):
-    ssc = StreamingContext(spark_context, 60)  # 60 second batches
-    
-    # Consume from Kafka
-    kafka_stream = KafkaUtils.createStream(
-        ssc,
-        'zookeeper:2181',
-        'trending-consumer-group',
-        {'autocomplete_queries': 1}
-    )
-    
-    # Extract queries
-    queries = kafka_stream.map(lambda x: json.loads(x[1]))
-    
-    # Count queries per language per window
-    query_counts = queries \
-        .map(lambda x: ((x['language'], x['query']), 1)) \
-        .reduceByKey(lambda a, b: a + b) \
-        .transform(lambda rdd: rdd.sortBy(lambda x: x[1], ascending=False))
-    
-    # Update Redis with trending
-    def update_trending(rdd):
-        for (language, query), count in rdd.take(100):
-            redis_client.zadd(
-                f"trending:{language}:{get_current_hour()}",
-                {query: count}
-            )
-            # Set expiry
-            redis_client.expire(f"trending:{language}:{get_current_hour()}", 7200)
-    
-    query_counts.foreachRDD(update_trending)
-    
-    ssc.start()
-    ssc.awaitTermination()
+**Multi-layer caching:**
+
+```
+┌────────────────────────────────────────────────────┐
+│ Layer 1: CDN Edge Cache                            │
+│ TTL: 5 minutes                                     │
+│ Keys: Popular prefixes (top 10K)                   │
+│ Hit rate: ~80%                                     │
+│ WHY: Giảm latency từ 50ms → 5ms cho 80% requests  │
+└────────────────────────────────────────────────────┘
+                        │
+                        ▼ Miss
+┌────────────────────────────────────────────────────┐
+│ Layer 2: Application Cache (Local)                 │
+│ TTL: 1 minute                                      │
+│ Keys: Recent queries on this instance              │
+│ Hit rate: ~50% của remaining                       │
+│ WHY: Avoid network hop to Redis                    │
+└────────────────────────────────────────────────────┘
+                        │
+                        ▼ Miss
+┌────────────────────────────────────────────────────┐
+│ Layer 3: Redis Cluster                             │
+│ TTL: 10 minutes                                    │
+│ Keys: All prefixes với suggestions                 │
+│ WHY: Shared cache across instances                 │
+└────────────────────────────────────────────────────┘
 ```
 
-**4. Multilingual Support**
+**Cache Invalidation Strategy:**
+
+| Trigger | Action | Reason |
+|---------|--------|--------|
+| New trending query | Invalidate related prefixes | Freshness |
+| Hourly batch job | Rebuild top-K per prefix | Accuracy |
+| User action | Invalidate user cache only | Personalization |
+
+### 4.4 Handling Korean/CJK Characters
+
+**Vấn đề đặc biệt:**
+- Korean: "한글" có thể được gõ partial "ㅎ" hoặc "하"
+- Japanese: Hiragana/Katakana conversion
 
 ```python
-import unicodedata
-
-def normalize_text(text, language):
-    # Unicode normalization
-    text = unicodedata.normalize('NFKC', text)
+def normalize_korean(text: str) -> List[str]:
+    """
+    Decompose Hangul để match partial typing.
     
-    # Language-specific processing
-    if language == 'ko':
-        # Korean: Separate Hangul into components
-        return decompose_hangul(text)
-    elif language == 'ja':
-        # Japanese: Handle Hiragana/Katakana
-        return normalize_japanese(text)
-    else:
-        return text.lower()
-
-def decompose_hangul(text):
-    # Decompose Korean syllables for better matching
-    # Example: "한글" -> "ㅎㅏㄴㄱㅡㄹ"
+    Example: "한" → ["ㅎ", "ㅏ", "ㄴ"]
+    
+    Điều này cho phép match khi user mới gõ "ㅎ"
+    """
     result = []
     for char in text:
-        if 0xAC00 <= ord(char) <= 0xD7A3:
-            # Decompose Hangul syllable
-            decomposed = unicodedata.decomposition(char)
-            result.append(decomposed)
+        if is_hangul_syllable(char):
+            # Unicode decomposition
+            initial, vowel, final = decompose_hangul(char)
+            result.extend([initial, vowel, final])
         else:
             result.append(char)
-    return ''.join(result)
+    return result
+
+# Trie cần index cả:
+# - Full syllable: "한글"  
+# - Decomposed: "ㅎㅏㄴㄱㅡㄹ"
 ```
 
-**5. Fuzzy Matching**
+---
+
+## 📈 Phase 5: Scaling & Bottlenecks (5 phút)
+
+### Bottleneck Analysis
+
+| Scale | Bottleneck | Solution |
+|-------|-----------|----------|
+| **10K QPS** | Single server | Add caching layer |
+| **100K QPS** | Redis single instance | Redis Cluster (sharding) |
+| **1M QPS** | CPU for ranking | Pre-compute rankings |
+| **10M QPS** | Network bandwidth | Edge caching, CDN |
+
+### Scaling Strategies
+
+**1. Horizontal Scaling:**
+```
+Autocomplete Service: Stateless → just add more instances
+Load Balancer: Round-robin (no sticky sessions needed)
+```
+
+**2. Data Sharding:**
+```
+Shard by first character of prefix:
+- Shard A: a-f
+- Shard B: g-m  
+- Shard C: n-t
+- Shard D: u-z
+
+Korean: Shard by first jamo (ㄱ-ㅎ)
+```
+
+**3. Geographic Distribution:**
+```
+┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+│   Seoul DC   │     │   Tokyo DC   │     │   US-West DC │
+│              │     │              │     │              │
+│ • Korean     │     │ • Japanese   │     │ • English    │
+│   queries    │     │   queries    │     │   queries    │
+│ • Primary    │     │ • Primary    │     │ • Primary    │
+│   for KR     │     │   for JP     │     │   for US     │
+└──────────────┘     └──────────────┘     └──────────────┘
+      ↑                     ↑                    ↑
+      └─────── Async replication ────────────────┘
+```
+
+### Failure Scenarios
+
+| Failure | Impact | Mitigation |
+|---------|--------|------------|
+| Redis down | No suggestions | Fallback to DB (degraded) |
+| Trending service down | Stale trending | Use cached trending |
+| One DC down | Regional outage | Route to nearest DC |
+| Trie corruption | Wrong suggestions | Rebuild from DB |
+
+---
+
+## 💡 Phase 6: Interview Tips
+
+### Common Follow-up Questions
+
+1. **"What if a celebrity tweets and suddenly million people search the same thing?"**
+   - Hot partition problem
+   - Solution: Replicate hot keys to multiple shards
+
+2. **"How do you prevent showing offensive suggestions?"**
+   - Blocklist filtering
+   - ML-based content moderation
+   - Human review for borderline cases
+
+3. **"How do you A/B test ranking algorithms?"**
+   - Split traffic by user_id hash
+   - Measure CTR, search success rate
+   - Gradual rollout (1% → 10% → 50% → 100%)
+
+4. **"Làm sao handle typos?"**
+   - Edit distance (Levenshtein)
+   - Phonetic matching (Soundex)
+   - ML-based correction
+
+### Red Flags - Những điều TRÁNH nói
+
+❌ "Just use Elasticsearch" - Quá generic, không show understanding  
+❌ "Cache everything" - Không discuss invalidation  
+❌ "Use NoSQL" - Không giải thích tại sao  
+❌ Vẽ quá nhiều chi tiết từ đầu - Nên high-level trước  
+
+### Điều Interviewers thích thấy
+
+✅ Trade-off analysis với reasoning  
+✅ Back-of-envelope calculations  
+✅ Proactive về failures và edge cases  
+✅ Biết khi nào đủ chi tiết và move on  
+
+---
+
+# 12. Payment Processing System
+
+> **Ví dụ thực tế**: NAVER Pay, Kakao Pay, Stripe  
+> **Thời gian phỏng vấn**: 45 phút  
+> **Độ khó**: ⭐⭐⭐⭐⭐ (Highest - vì liên quan đến tiền)
+
+## 🎯 Phase 1: Understand the Problem (5 phút)
+
+### Clarifying Questions - Critical cho Payment
+
+| Câu hỏi | Tại sao CRITICAL | Giả định |
+|---------|-----------------|----------|
+| "Loại payment nào? Online/Offline/P2P?" | Mỗi loại có flow khác nhau hoàn toàn | Online payments |
+| "Cần support những payment methods nào?" | Credit card, bank transfer có latency khác nhau | Cards, Bank, Wallet |
+| "Consistency requirement?" | **Payment KHÔNG THỂ eventually consistent** | Strong consistency |
+| "Có cần support multi-currency?" | Ảnh hưởng đến precision, FX rates | Có |
+| "Compliance requirements?" | PCI-DSS là bắt buộc cho credit cards | PCI-DSS Level 1 |
+
+### Functional Requirements
+- **FR1**: Process payments (authorize → capture → settle)
+- **FR2**: Support refunds (full and partial)
+- **FR3**: Multi-currency support
+- **FR4**: Payment history và reporting
+
+### Non-Functional Requirements  
+- **NFR1**: **99.999% availability** (5 minutes downtime/year)
+- **NFR2**: **Exactly-once processing** - CỰC KỲ quan trọng
+- **NFR3**: **Strong consistency** - không thể mất transaction
+- **NFR4**: **PCI-DSS compliant** - credit card data handling
+
+> ⚠️ **Critical Point**: Payment khác với các system khác - KHÔNG CÓ CHỖ CHO TRADE-OFF về consistency. Mất tiền = mất user.
+
+---
+
+## 📊 Phase 2: Capacity Estimation (3 phút)
+
+### Traffic
+
+```
+Daily transactions: 100M
+Peak TPS = 100M / 86400 × 5 (peak factor) ≈ 5,800 TPS
+
+Mỗi transaction có:
+- 1 Authorization request
+- 1 Capture request  
+- 0.05 Refund requests (5% refund rate)
+
+Total API calls = 5,800 × 2.05 ≈ 12,000 TPS peak
+```
+
+### Storage
+
+```
+Transaction record size: ~1KB
+- transaction_id, user_id, merchant_id, amount, currency
+- status, timestamps, metadata
+
+Daily: 100M × 1KB = 100GB/day
+Yearly: 100GB × 365 = 36.5TB/year
+
+Cần giữ 7 years cho compliance → 250TB
+```
+
+### Money Values
+
+```
+Use DECIMAL(19, 4) - KHÔNG BAO GIỜ dùng FLOAT
+- 19 digits total
+- 4 decimal places
+- Reason: 0.1 + 0.2 ≠ 0.3 trong floating point!
+```
+
+---
+
+## 🏗️ Phase 3: High-Level Design (10 phút)
+
+### Payment Flow Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        PAYMENT FLOW                                  │
+│                                                                      │
+│  ┌──────┐    ┌──────────┐    ┌──────────┐    ┌──────────────────┐   │
+│  │ User │───▶│ Merchant │───▶│  NAVER   │───▶│  Card Network    │   │
+│  │      │◀───│   App    │◀───│   Pay    │◀───│  (Visa/Master)   │   │
+│  └──────┘    └──────────┘    └──────────┘    └──────────────────┘   │
+│                                    │                                 │
+│                                    ▼                                 │
+│                            ┌──────────────┐                         │
+│                            │    Bank      │                         │
+│                            │   (Issuer)   │                         │
+│                            └──────────────┘                         │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        CLIENT LAYER                                  │
+│   Mobile App ─────┬───── Web App ─────┬───── Merchant API           │
+└───────────────────┼───────────────────┼─────────────────────────────┘
+                    │                   │
+                    ▼                   ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                        API GATEWAY                                   │
+│   • Rate Limiting (per merchant)                                     │
+│   • Authentication (API Key + HMAC signature)                        │
+│   • Request logging (audit trail)                                    │
+└─────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    PAYMENT ORCHESTRATOR                              │
+│   ┌─────────────────────────────────────────────────────────────┐   │
+│   │                  IDEMPOTENCY CHECK                           │   │
+│   │   • Check idempotency_key in Redis                          │   │
+│   │   • If exists → return cached result                        │   │
+│   │   • If not → proceed and store result                       │   │
+│   └─────────────────────────────────────────────────────────────┘   │
+│                              │                                       │
+│   ┌────────────┬─────────────┼─────────────┬────────────┐           │
+│   ▼            ▼             ▼             ▼            ▼           │
+│ ┌──────┐  ┌────────┐   ┌──────────┐  ┌────────┐  ┌──────────┐      │
+│ │Fraud │  │Currency│   │  LEDGER  │  │Payment │  │Notifi-   │      │
+│ │Check │  │Convert │   │ SERVICE  │  │Provider│  │cation    │      │
+│ │      │  │        │   │          │  │Router  │  │          │      │
+│ └──────┘  └────────┘   └──────────┘  └────────┘  └──────────┘      │
+└─────────────────────────────────────────────────────────────────────┘
+                              │
+          ┌───────────────────┼───────────────────┐
+          ▼                   ▼                   ▼
+    ┌──────────┐        ┌──────────┐        ┌──────────┐
+    │  VISA    │        │   Bank   │        │  Other   │
+    │  Master  │        │   API    │        │ Providers│
+    └──────────┘        └──────────┘        └──────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                        DATA LAYER                                    │
+│   ┌────────────────┐  ┌────────────────┐  ┌────────────────┐        │
+│   │   PostgreSQL   │  │     Redis      │  │  Event Store   │        │
+│   │   (Primary)    │  │   (Idempotency)│  │  (Audit Log)   │        │
+│   │                │  │                │  │                │        │
+│   │ • Transactions │  │ • Idem keys    │  │ • All events   │        │
+│   │ • Ledger       │  │ • Locks        │  │ • Immutable    │        │
+│   │ • Users        │  │ • Cache        │  │ • Compliance   │        │
+│   └────────────────┘  └────────────────┘  └────────────────┘        │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 🔬 Phase 4: Deep Dive (15 phút)
+
+### 4.1 Idempotency - Tại sao CỰC KỲ quan trọng?
+
+**Scenario**: Network timeout sau khi submit payment
+```
+User click "Pay" → Request sent → Server process → Send to card network
+                                                 ↓
+                              ← ← ← Network timeout ← ← ←
+                              
+User thấy error → Click "Pay" lại → DOUBLE CHARGE! 💀
+```
+
+**Solution: Idempotency Key**
 
 ```python
-from fuzzywuzzy import fuzz
-
-def fuzzy_autocomplete(prefix, candidates, threshold=80):
-    matches = []
+@app.post("/payments")
+async def create_payment(request: PaymentRequest):
+    """
+    Idempotency key = client-generated unique ID per payment attempt.
     
-    for candidate in candidates:
-        # Calculate similarity
-        similarity = fuzz.partial_ratio(prefix.lower(), candidate.lower())
+    Flow:
+    1. Check Redis for existing result with this key
+    2. If exists → return cached result (no double charge)
+    3. If not → process and store result
+    
+    TTL: 24h (đủ để handle retries)
+    """
+    # 1. Check idempotency
+    cache_key = f"idempotency:{request.idempotency_key}"
+    cached = redis.get(cache_key)
+    
+    if cached:
+        return json.loads(cached)  # Return same result
+    
+    # 2. Acquire distributed lock (prevent race condition)
+    lock = redis.lock(f"lock:{request.idempotency_key}", timeout=30)
+    
+    if not lock.acquire(blocking=True, blocking_timeout=5):
+        raise ConcurrentRequestError()
+    
+    try:
+        # Double-check after lock
+        cached = redis.get(cache_key)
+        if cached:
+            return json.loads(cached)
         
-        if similarity >= threshold:
-            matches.append({
-                'text': candidate,
-                'similarity': similarity
-            })
-    
-    # Sort by similarity
-    matches.sort(key=lambda x: x['similarity'], reverse=True)
-    
-    return [m['text'] for m in matches[:10]]
-
-# Typo correction using edit distance
-def suggest_corrections(query, dictionary, max_distance=2):
-    from Levenshtein import distance
-    
-    corrections = []
-    
-    for word in dictionary:
-        dist = distance(query.lower(), word.lower())
-        if dist <= max_distance:
-            corrections.append((word, dist))
-    
-    # Sort by distance
-    corrections.sort(key=lambda x: x[1])
-    
-    return [word for word, dist in corrections[:5]]
+        # 3. Process payment
+        result = await process_payment(request)
+        
+        # 4. Store result for idempotency
+        redis.setex(cache_key, 86400, json.dumps(result))
+        
+        return result
+        
+    finally:
+        lock.release()
 ```
 
-**6. Personalization with ML**
+### 4.2 Double-Entry Ledger - Tại sao cần?
 
-```python
-import numpy as np
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-
-class PersonalizedAutocomplete:
-    def __init__(self):
-        self.user_profiles = {}
-        self.vectorizer = TfidfVectorizer(max_features=1000)
-    
-    def build_user_profile(self, user_id):
-        # Get user's search history
-        history = get_user_search_history(user_id, limit=1000)
-        
-        if not history:
-            return None
-        
-        # Create TF-IDF profile
-        profile_vector = self.vectorizer.fit_transform(history)
-        avg_vector = profile_vector.mean(axis=0)
-        
-        self.user_profiles[user_id] = avg_vector
-        return avg_vector
-    
-    def get_personalized_suggestions(self, user_id, candidates):
-        # Get user profile
-        if user_id not in self.user_profiles:
-            self.build_user_profile(user_id)
-        
-        user_profile = self.user_profiles.get(user_id)
-        
-        if user_profile is None:
-            return candidates  # No personalization
-        
-        # Vectorize candidates
-        candidate_vectors = self.vectorizer.transform(candidates)
-        
-        # Calculate similarity
-        similarities = cosine_similarity(user_profile, candidate_vectors)[0]
-        
-        # Sort by similarity
-        ranked = sorted(
-            zip(candidates, similarities),
-            key=lambda x: x[1],
-            reverse=True
-        )
-        
-        return [cand for cand, score in ranked]
-```
-
-**7. Database Schema**
+**Principle**: Mọi transaction đều có 2 entries: DEBIT và CREDIT
+- Tổng tất cả debits = Tổng tất cả credits (luôn luôn)
+- Nếu không balance → có bug hoặc fraud
 
 ```sql
--- Query statistics table
-CREATE TABLE query_stats (
-    query_id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    query_text VARCHAR(500) NOT NULL,
-    language VARCHAR(10),
-    frequency BIGINT DEFAULT 1,
-    last_searched TIMESTAMP,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+-- Ledger entries table
+CREATE TABLE ledger_entries (
+    id BIGSERIAL PRIMARY KEY,
+    transaction_id UUID NOT NULL,
+    account_id VARCHAR(50) NOT NULL,    -- "user:123" hoặc "merchant:456"
+    entry_type VARCHAR(10) NOT NULL,    -- 'DEBIT' hoặc 'CREDIT'
+    amount DECIMAL(19, 4) NOT NULL,
+    currency VARCHAR(3) NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW(),
     
-    INDEX idx_query_lang (query_text, language),
-    INDEX idx_frequency (frequency DESC)
+    -- Mỗi transaction PHẢI có đúng 1 DEBIT và 1 CREDIT
+    CONSTRAINT valid_entry_type CHECK (entry_type IN ('DEBIT', 'CREDIT'))
 );
 
--- User search history
-CREATE TABLE user_search_history (
-    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    user_id BIGINT,
-    query_text VARCHAR(500),
-    language VARCHAR(10),
-    clicked_position INT,
-    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    
-    INDEX idx_user_time (user_id, timestamp DESC)
-);
+-- Ví dụ: User A trả 100 USD cho Merchant B
+-- Entry 1: DEBIT from user:A = -100 USD
+-- Entry 2: CREDIT to merchant:B = +100 USD
+-- Sum = 0 ✓
 
--- Trending queries (materialized view)
-CREATE TABLE trending_queries (
-    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    query_text VARCHAR(500),
-    language VARCHAR(10),
-    score FLOAT,
-    hour_bucket TIMESTAMP,
-    
-    INDEX idx_lang_hour (language, hour_bucket),
-    INDEX idx_score (score DESC)
-);
+INSERT INTO ledger_entries (transaction_id, account_id, entry_type, amount, currency)
+VALUES
+    ('txn_123', 'user:A', 'DEBIT', -100.00, 'USD'),
+    ('txn_123', 'merchant:B', 'CREDIT', 100.00, 'USD');
 ```
 
-**8. Building and Updating Trie**
+### 4.3 Payment State Machine
 
-```python
-def build_trie_from_db():
-    # Batch job: Build trie from query statistics
-    trie = AutocompleteTrie()
-    
-    # Get top 10M queries
-    queries = db.execute("""
-        SELECT query_text, frequency, language
-        FROM query_stats
-        WHERE frequency > 10
-        ORDER BY frequency DESC
-        LIMIT 10000000
-    """)
-    
-    # Group by language
-    tries_by_lang = {}
-    
-    for query in queries:
-        lang = query['language']
-        
-        if lang not in tries_by_lang:
-            tries_by_lang[lang] = AutocompleteTrie()
-        
-        tries_by_lang[lang].insert(query['query_text'], query['frequency'])
-    
-    # Serialize and save to Redis
-    for lang, trie in tries_by_lang.items():
-        serialized = pickle.dumps(trie)
-        redis_client.set(f"trie:{lang}", serialized)
-    
-    return tries_by_lang
-
-# Incremental update
-def update_trie_incremental(query, language, frequency_delta=1):
-    # Get trie from Redis
-    trie_data = redis_client.get(f"trie:{language}")
-    
-    if trie_data:
-        trie = pickle.loads(trie_data)
-    else:
-        trie = AutocompleteTrie()
-    
-    # Update with new query
-    trie.insert(query, frequency_delta)
-    
-    # Save back to Redis
-    redis_client.set(f"trie:{language}", pickle.dumps(trie))
+```
+┌─────────┐
+│ CREATED │ ─────────────────────────────────────┐
+└────┬────┘                                      │
+     │ submit()                                  │ timeout/cancel
+     ▼                                           │
+┌─────────────┐                                  │
+│  PENDING    │ ────────────────────────────┐    │
+└──────┬──────┘                             │    │
+       │ authorize()                        │    │
+       ▼                                    │    │
+┌─────────────┐    decline()           ┌────▼────▼────┐
+│ AUTHORIZED  │ ─────────────────────▶ │   FAILED     │
+└──────┬──────┘                        └──────────────┘
+       │ capture()
+       ▼
+┌─────────────┐    refund()     ┌─────────────┐
+│  CAPTURED   │ ───────────────▶│  REFUNDED   │
+└──────┬──────┘                 └─────────────┘
+       │ settle()
+       ▼
+┌─────────────┐
+│   SETTLED   │ (Final state - money transferred)
+└─────────────┘
 ```
 
-**9. Load Balancing & Geo-Distribution**
+**Tại sao cần state machine?**
+- Enforce valid transitions (không thể refund trước capture)
+- Audit trail (mỗi transition được log)
+- Recovery (biết chính xác state khi system crash)
+
+### 4.4 Handling Failures - Saga Pattern
+
+**Scenario**: User mua hàng, cần:
+1. Charge payment
+2. Reserve inventory
+3. Create order
+
+**Vấn đề**: Nếu step 2 fail sau step 1 succeed?
+
+**Solution: Saga với Compensation**
 
 ```python
-# GeoDNS routing
-geo_routing = {
-    'KR': 'seoul.autocomplete.naver.com',
-    'JP': 'tokyo.autocomplete.naver.com',
-    'US': 'us-west.autocomplete.naver.com',
-    'EU': 'frankfurt.autocomplete.naver.com'
-}
+class PaymentSaga:
+    """
+    Saga = Distributed transaction với compensating actions.
+    
+    Mỗi step có 2 functions:
+    - execute(): làm việc chính
+    - compensate(): undo nếu sau đó có failure
+    """
+    
+    async def execute(self, order_request):
+        # Step 1: Charge payment
+        try:
+            payment_result = await self.charge_payment(order_request)
+        except PaymentError as e:
+            raise  # No compensation needed yet
+            
+        # Step 2: Reserve inventory
+        try:
+            inventory_result = await self.reserve_inventory(order_request)
+        except InventoryError as e:
+            # Compensate step 1
+            await self.refund_payment(payment_result.payment_id)
+            raise
+            
+        # Step 3: Create order
+        try:
+            order_result = await self.create_order(order_request)
+        except OrderError as e:
+            # Compensate step 2 then step 1
+            await self.release_inventory(inventory_result.reservation_id)
+            await self.refund_payment(payment_result.payment_id)
+            raise
+            
+        return order_result
+```
 
-# Consistent hashing for cache distribution
-class ConsistentHash:
-    def __init__(self, nodes, replicas=3):
-        self.replicas = replicas
+---
+
+## 💡 Phase 6: Interview Tips
+
+### Payment-Specific Questions
+
+1. **"Làm sao handle partial refunds?"**
+   - Track refund_amount per transaction
+   - Validation: sum(refunds) <= original_amount
+   - State: PARTIALLY_REFUNDED vs FULLY_REFUNDED
+
+2. **"Currency conversion happens at which step?"**
+   - At authorization time (rate locked)
+   - Store both original and converted amounts
+   - Show user both
+
+3. **"PCI-DSS compliance?"**
+   - Never store full card number
+   - Tokenization pattern
+   - Encryption at rest and in transit
+
+### 🗄️ Complete Payment Database Schema
+
+```sql
+-- =====================================================
+-- PAYMENT PROCESSING SYSTEM DATABASE SCHEMA
+-- PostgreSQL with strong consistency guarantees
+-- =====================================================
+
+-- 1. Transactions (core payment records)
+CREATE TABLE transactions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    idempotency_key VARCHAR(64) NOT NULL UNIQUE,  -- Client-provided
+    
+    -- Parties
+    user_id BIGINT NOT NULL,
+    merchant_id BIGINT NOT NULL,
+    
+    -- Money (NEVER use FLOAT!)
+    amount DECIMAL(19, 4) NOT NULL,
+    currency CHAR(3) NOT NULL,                    -- ISO 4217: USD, KRW, JPY
+    converted_amount DECIMAL(19, 4),              -- If currency conversion applied
+    converted_currency CHAR(3),
+    exchange_rate DECIMAL(12, 6),
+    
+    -- Status tracking
+    status VARCHAR(20) NOT NULL DEFAULT 'CREATED',
+    status_reason VARCHAR(500),
+    
+    -- Payment method (tokenized - no raw card data)
+    payment_method_type VARCHAR(20) NOT NULL,     -- card, bank_transfer, wallet
+    payment_method_token VARCHAR(100) NOT NULL,   -- Reference to vault
+    payment_method_last4 CHAR(4),                 -- Last 4 digits for display
+    
+    -- External references
+    provider VARCHAR(50) NOT NULL,                -- stripe, adyen, bank_api
+    provider_transaction_id VARCHAR(100),
+    provider_response JSONB,
+    
+    -- Timestamps
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    authorized_at TIMESTAMP,
+    captured_at TIMESTAMP,
+    settled_at TIMESTAMP,
+    failed_at TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    
+    -- Metadata and audit
+    request_ip INET,
+    user_agent VARCHAR(500),
+    device_fingerprint VARCHAR(100),
+    metadata JSONB,
+    
+    CONSTRAINT valid_status CHECK (status IN (
+        'CREATED', 'PENDING', 'AUTHORIZED', 'CAPTURED', 
+        'SETTLED', 'FAILED', 'CANCELLED', 'REFUNDED', 'PARTIALLY_REFUNDED'
+    ))
+);
+
+-- Critical indexes for payment queries
+CREATE INDEX idx_txn_user ON transactions (user_id, created_at DESC);
+CREATE INDEX idx_txn_merchant ON transactions (merchant_id, created_at DESC);
+CREATE INDEX idx_txn_status ON transactions (status) WHERE status NOT IN ('SETTLED', 'FAILED');
+CREATE INDEX idx_txn_provider ON transactions (provider, provider_transaction_id);
+CREATE INDEX idx_txn_created ON transactions (created_at DESC);
+
+-- Partial index for active transactions (optimization)
+CREATE INDEX idx_txn_pending ON transactions (created_at) 
+    WHERE status IN ('PENDING', 'AUTHORIZED', 'CAPTURED');
+
+
+-- 2. Transaction Events (audit log - append only)
+CREATE TABLE transaction_events (
+    id BIGSERIAL PRIMARY KEY,
+    transaction_id UUID NOT NULL REFERENCES transactions(id),
+    event_type VARCHAR(50) NOT NULL,              -- created, authorized, captured, failed, etc.
+    previous_status VARCHAR(20),
+    new_status VARCHAR(20) NOT NULL,
+    event_data JSONB,                             -- Additional context
+    actor_type VARCHAR(20),                       -- user, system, admin, provider
+    actor_id VARCHAR(100),
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    
+    -- Immutable - no updates allowed
+    CONSTRAINT no_update CHECK (TRUE)
+);
+
+CREATE INDEX idx_txn_events_txn ON transaction_events (transaction_id, created_at);
+
+
+-- 3. Refunds
+CREATE TABLE refunds (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    transaction_id UUID NOT NULL REFERENCES transactions(id),
+    idempotency_key VARCHAR(64) NOT NULL UNIQUE,
+    
+    amount DECIMAL(19, 4) NOT NULL,
+    currency CHAR(3) NOT NULL,
+    reason VARCHAR(500),
+    refund_type VARCHAR(20) NOT NULL,             -- full, partial
+    
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+    provider_refund_id VARCHAR(100),
+    
+    requested_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    processed_at TIMESTAMP,
+    requested_by VARCHAR(100),                    -- user, merchant, admin
+    
+    CONSTRAINT valid_refund_status CHECK (status IN (
+        'PENDING', 'PROCESSING', 'COMPLETED', 'FAILED'
+    ))
+);
+
+CREATE INDEX idx_refund_txn ON refunds (transaction_id);
+
+
+-- 4. Double-Entry Ledger (accounting)
+CREATE TABLE ledger_entries (
+    id BIGSERIAL PRIMARY KEY,
+    transaction_id UUID NOT NULL,
+    entry_id UUID NOT NULL DEFAULT gen_random_uuid(),
+    
+    account_id VARCHAR(100) NOT NULL,             -- Format: "type:id" e.g. "user:123", "merchant:456"
+    account_type VARCHAR(20) NOT NULL,            -- user, merchant, platform, reserve
+    
+    entry_type VARCHAR(10) NOT NULL,              -- DEBIT or CREDIT
+    amount DECIMAL(19, 4) NOT NULL,
+    currency CHAR(3) NOT NULL,
+    
+    balance_after DECIMAL(19, 4),                 -- Denormalized for quick lookup
+    
+    description VARCHAR(500),
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    
+    CONSTRAINT valid_entry_type CHECK (entry_type IN ('DEBIT', 'CREDIT')),
+    
+    -- Every transaction must balance: sum(debits) = sum(credits)
+    -- This is verified by application logic and periodic reconciliation
+);
+
+CREATE INDEX idx_ledger_account ON ledger_entries (account_id, created_at DESC);
+CREATE INDEX idx_ledger_txn ON ledger_entries (transaction_id);
+
+-- Materialized view for account balances
+CREATE MATERIALIZED VIEW account_balances AS
+SELECT 
+    account_id,
+    currency,
+    SUM(CASE WHEN entry_type = 'CREDIT' THEN amount ELSE -amount END) as balance,
+    MAX(created_at) as last_updated
+FROM ledger_entries
+GROUP BY account_id, currency;
+
+CREATE UNIQUE INDEX idx_balance_account ON account_balances (account_id, currency);
+
+
+-- 5. Payment Methods (tokenized)
+CREATE TABLE payment_methods (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id BIGINT NOT NULL,
+    
+    method_type VARCHAR(20) NOT NULL,             -- card, bank_account, wallet
+    token VARCHAR(100) NOT NULL UNIQUE,           -- From payment vault
+    
+    -- Safe to store (not sensitive)
+    display_name VARCHAR(100),                    -- "Visa ending 4242"
+    last4 CHAR(4),
+    expiry_month SMALLINT,
+    expiry_year SMALLINT,
+    card_brand VARCHAR(20),                       -- visa, mastercard, amex
+    
+    is_default BOOLEAN DEFAULT FALSE,
+    is_active BOOLEAN DEFAULT TRUE,
+    
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    
+    -- NEVER store: full card number, CVV, magnetic stripe data
+    CONSTRAINT never_store_sensitive CHECK (
+        token IS NOT NULL AND length(last4) <= 4
+    )
+);
+
+CREATE INDEX idx_payment_method_user ON payment_methods (user_id, is_active);
+```
+
+### 🔄 Payment Flow Sequence Diagram
+
+```
+┌──────┐      ┌────────┐      ┌────────────┐      ┌────────┐      ┌───────────┐      ┌────────┐
+│Client│      │Merchant│      │Payment API │      │  Fraud │      │  Provider │      │Database│
+└──┬───┘      └───┬────┘      └─────┬──────┘      └───┬────┘      └─────┬─────┘      └───┬────┘
+   │              │                  │                 │                 │                │
+   │ Submit Order │                  │                 │                 │                │
+   │─────────────>│                  │                 │                 │                │
+   │              │                  │                 │                 │                │
+   │              │ POST /payments   │                 │                 │                │
+   │              │ {idempotency_key,│                 │                 │                │
+   │              │  amount, token}  │                 │                 │                │
+   │              │─────────────────>│                 │                 │                │
+   │              │                  │                 │                 │                │
+   │              │                  │ Check idempotency                 │                │
+   │              │                  │────────────────────────────────────────────────────>│
+   │              │                  │                 │                 │                │
+   │              │                  │<───────────────────────────────────────────────────│
+   │              │                  │ (not found - new request)         │                │
+   │              │                  │                 │                 │                │
+   │              │                  │ Fraud check     │                 │                │
+   │              │                  │────────────────>│                 │                │
+   │              │                  │                 │                 │                │
+   │              │                  │<────────────────│                 │                │
+   │              │                  │ score: 0.1 (OK) │                 │                │
+   │              │                  │                 │                 │                │
+   │              │                  │ Create txn record                 │                │
+   │              │                  │────────────────────────────────────────────────────>│
+   │              │                  │                 │                 │                │
+   │              │                  │ Authorize       │                 │                │
+   │              │                  │─────────────────────────────────>│                │
+   │              │                  │                 │                 │                │
+   │              │                  │                 │                 │ Forward to     │
+   │              │                  │                 │                 │ card network   │
+   │              │                  │                 │                 │──────────>     │
+   │              │                  │                 │                 │                │
+   │              │                  │                 │                 │ <──────────    │
+   │              │                  │                 │                 │ Approved       │
+   │              │                  │                 │                 │                │
+   │              │                  │<─────────────────────────────────│                │
+   │              │                  │ auth_code: ABC123                 │                │
+   │              │                  │                 │                 │                │
+   │              │                  │ Update txn + ledger entries       │                │
+   │              │                  │────────────────────────────────────────────────────>│
+   │              │                  │                 │                 │                │
+   │              │                  │ Store idempotency result          │                │
+   │              │                  │────────────────────────────────────────────────────>│
+   │              │                  │                 │                 │                │
+   │              │<─────────────────│                 │                 │                │
+   │              │ 200 OK           │                 │                 │                │
+   │              │ {txn_id, status} │                 │                 │                │
+   │              │                  │                 │                 │                │
+   │<─────────────│                  │                 │                 │                │
+   │ Payment Success                 │                 │                 │                │
+```
+
+### 🔒 PCI-DSS Compliance Checklist
+
+| Requirement | Implementation | How We Comply |
+|-------------|---------------|---------------|
+| **Never store CVV** | No CVV field in DB | CVV only passed to provider API, not logged |
+| **Encrypt card data** | Tokenization | We never see raw card numbers - use Stripe tokens |
+| **Network security** | TLS 1.3 everywhere | Enforced at load balancer |
+| **Access control** | Least privilege | Payment DB on isolated subnet |
+| **Audit logging** | All access logged | transaction_events table, immutable |
+| **Key rotation** | Every 90 days | AWS KMS with automatic rotation |
+| **Vulnerability scanning** | Weekly | Qualys + internal pentests |
+| **Incident response plan** | Documented | Notify within 24 hours |
+
+```python
+# NEVER do this:
+class BadPaymentRequest:
+    card_number: str      # ❌ NEVER store
+    cvv: str              # ❌ NEVER store
+    expiry: str           # ⚠️ Only store encrypted
+
+# DO this instead:
+class GoodPaymentRequest:
+    payment_token: str    # ✅ Token from Stripe/Adyen
+    last4: str            # ✅ Safe for display
+    idempotency_key: str  # ✅ For exactly-once
+```
+
+### 🌍 Real-World Case Study: Stripe
+
+| Aspect | Stripe's Approach | Learning |
+|--------|-------------------|----------|
+| **Idempotency** | Required for all mutations | Client must provide `Idempotency-Key` header |
+| **Errors** | Structured error codes | `card_declined`, `insufficient_funds`, `expired_card` |
+| **Webhooks** | At-least-once delivery | Client must handle duplicate events |
+| **Rate limits** | 100 reqs/sec default | Automatic backoff required |
+| **Testing** | Test mode with fake cards | `4242424242424242` always succeeds |
+
+**Key Takeaways:**
+1. **Idempotency is non-negotiable** - Every payment API must support it
+2. **Tokenization >> Encryption** - Don't handle raw card data
+3. **Webhooks need deduplication** - Same event can arrive multiple times
+4. **Always have a reconciliation job** - Compare with provider daily
+
+### ⚠️ Failure Scenarios & Recovery
+
+| Failure | Detection | Impact | Recovery |
+|---------|-----------|--------|----------|
+| **Provider timeout** | No response in 30s | Unknown state | Query provider status, set to PENDING_REVIEW |
+| **DB write fails after auth** | Exception caught | Money charged but not recorded | Immediate refund via provider API |
+| **Ledger imbalance** | Nightly reconciliation | Accounting error | Alert, manual investigation, compensating entry |
+| **Fraud after authorization** | Delayed ML review | Potential chargeback | Cancel capture, notify merchant |
+| **Provider outage** | Health check fails | All payments fail | Failover to backup provider (Stripe → Adyen) |
+
+```python
+class PaymentRecoveryService:
+    """
+    Background job xử lý các transactions stuck.
+    Chạy every 5 minutes.
+    """
+    
+    async def recover_stuck_transactions(self):
+        # Find transactions stuck in PENDING/AUTHORIZED for > 30 minutes
+        stuck = await self.db.query("""
+            SELECT * FROM transactions 
+            WHERE status IN ('PENDING', 'AUTHORIZED')
+            AND updated_at < NOW() - INTERVAL '30 minutes'
+        """)
+        
+        for txn in stuck:
+            try:
+                # Query provider for actual status
+                provider_status = await self.provider.get_status(
+                    txn.provider_transaction_id
+                )
+                
+                if provider_status == 'APPROVED':
+                    # Provider approved but we missed callback
+                    await self.mark_authorized(txn.id)
+                    
+                elif provider_status == 'DECLINED':
+                    # Provider declined but we missed callback
+                    await self.mark_failed(txn.id, 'declined_by_provider')
+                    
+                elif provider_status == 'NOT_FOUND':
+                    # Request never reached provider
+                    await self.mark_failed(txn.id, 'never_submitted')
+                    
+                else:
+                    # Still processing - extend timeout
+                    await self.extend_timeout(txn.id)
+                    
+            except Exception as e:
+                logger.error(f"Recovery failed for {txn.id}: {e}")
+                await self.escalate_to_oncall(txn.id)
+```
+
+### Red Flags
+
+❌ Using eventual consistency for ledger  
+❌ Storing credit card numbers in your DB  
+❌ No idempotency mechanism  
+❌ Float instead of Decimal for money  
+
+---
+
+# 13. Distributed Cache System
+
+> **Ví dụ thực tế**: Redis Cluster, Memcached, NAVER internal caching  
+> **Thời gian phỏng vấn**: 45 phút
+
+## 🎯 Phase 1: Understand the Problem (5 phút)
+
+### Clarifying Questions
+
+| Câu hỏi | Impact | Giả định |
+|---------|--------|----------|
+| "Cache pattern nào? Read-heavy hay write-heavy?" | Ảnh hưởng consistency strategy | Read-heavy (100:1) |
+| "TTL-based hay explicit invalidation?" | Complexity của invalidation | Cả hai |
+| "Single data center hay multi-region?" | Replication strategy | Multi-region |
+| "Acceptable stale data window?" | Eventually consistent hay strong | 1-5 seconds ok |
+
+### Requirements
+- **FR1**: GET/SET/DELETE operations
+- **FR2**: TTL support
+- **FR3**: Eviction policies (LRU, LFU)
+- **NFR1**: p99 < 10ms
+- **NFR2**: 99.99% availability
+- **NFR3**: 10M QPS capacity
+
+---
+
+## 📊 Phase 2: Capacity Estimation (3 phút)
+
+```
+QPS: 10M reads/sec, 100K writes/sec
+Average key size: 100 bytes
+Average value size: 1KB
+Total items: 1 Billion
+
+Memory needed = 1B × (100 + 1000) bytes = 1.1TB
+
+Per node (64GB max): 1.1TB / 64GB ≈ 18 nodes minimum
+With 3x replication: 54 nodes
+```
+
+---
+
+## 🏗️ Phase 3: High-Level Design (10 phút)
+
+### Architecture
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│                      APPLICATION SERVERS                        │
+│   ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐       │
+│   │  App 1   │  │  App 2   │  │  App 3   │  │  App N   │       │
+│   └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘       │
+│        │             │             │             │              │
+│        └─────────────┼─────────────┼─────────────┘              │
+│                      │             │                            │
+│              ┌───────▼─────────────▼───────┐                   │
+│              │    CACHE CLIENT LIBRARY     │                   │
+│              │  • Connection pooling       │                   │
+│              │  • Consistent hashing       │                   │
+│              │  • Retry logic              │                   │
+│              └─────────────┬───────────────┘                   │
+└────────────────────────────┼───────────────────────────────────┘
+                              │
+              ┌───────────────┼───────────────┐
+              ▼               ▼               ▼
+       ┌────────────┐  ┌────────────┐  ┌────────────┐
+       │  Shard 1   │  │  Shard 2   │  │  Shard 3   │
+       │            │  │            │  │            │
+       │ ┌────────┐ │  │ ┌────────┐ │  │ ┌────────┐ │
+       │ │ Master │ │  │ │ Master │ │  │ │ Master │ │
+       │ └───┬────┘ │  │ └───┬────┘ │  │ └───┬────┘ │
+       │     │      │  │     │      │  │     │      │
+       │ ┌───▼────┐ │  │ ┌───▼────┐ │  │ ┌───▼────┐ │
+       │ │Replica1│ │  │ │Replica1│ │  │ │Replica1│ │
+       │ └────────┘ │  │ └────────┘ │  │ └────────┘ │
+       │ ┌────────┐ │  │ ┌────────┐ │  │ ┌────────┐ │
+       │ │Replica2│ │  │ │Replica2│ │  │ │Replica2│ │
+       │ └────────┘ │  │ └────────┘ │  │ └────────┘ │
+       └────────────┘  └────────────┘  └────────────┘
+```
+
+---
+
+## 🔬 Phase 4: Deep Dive (15 phút)
+
+### 4.1 Consistent Hashing - Tại sao không dùng modulo?
+
+**Problem với modulo hashing:**
+```
+hash(key) % N = node_number
+
+Khi thêm 1 node: N → N+1
+→ Hầu hết keys phải di chuyển!
+→ Cache stampede, system chậm
+```
+
+**Solution: Consistent Hashing**
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    HASH RING (0 to 2^32)                    │
+│                                                             │
+│                           0°                                │
+│                          ┌───┐                              │
+│                    Node A│   │                              │
+│                          └───┘                              │
+│                   ╱            ╲                            │
+│                 ╱                ╲                          │
+│    270°  ┌───┐                      ┌───┐  90°             │
+│     Node D│   │                     │   │Node B            │
+│          └───┘                      └───┘                   │
+│                 ╲                ╱                          │
+│                   ╲            ╱                            │
+│                          ┌───┐                              │
+│                    Node C│   │                              │
+│                          └───┘                              │
+│                          180°                               │
+│                                                             │
+│  Key lookup: hash(key) → find next node clockwise          │
+│  Add node: Only keys between prev and new node move        │
+└─────────────────────────────────────────────────────────────┘
+```
+
+```python
+class ConsistentHashRing:
+    """
+    Virtual nodes: Mỗi physical node có 150 virtual nodes
+    Tại sao? Để distribution đều hơn
+    
+    Không có virtual nodes → nodes có thể clustered trên ring
+    → Some nodes get 30% traffic, some get 5%
+    """
+    def __init__(self, nodes, virtual_nodes=150):
         self.ring = {}
         self.sorted_keys = []
         
         for node in nodes:
-            self.add_node(node)
-    
-    def add_node(self, node):
-        for i in range(self.replicas):
-            key = self._hash(f"{node}:{i}")
-            self.ring[key] = node
-            self.sorted_keys.append(key)
+            for i in range(virtual_nodes):
+                virtual_key = hash(f"{node}:{i}")
+                self.ring[virtual_key] = node
+                self.sorted_keys.append(virtual_key)
         
         self.sorted_keys.sort()
     
     def get_node(self, key):
+        """O(log n) với binary search"""
         if not self.ring:
             return None
-        
-        hash_key = self._hash(key)
-        
-        # Find first node >= hash
-        for node_key in self.sorted_keys:
-            if node_key >= hash_key:
-                return self.ring[node_key]
-        
-        # Wrap around to first node
-        return self.ring[self.sorted_keys[0]]
-    
-    def _hash(self, key):
-        return int(hashlib.md5(key.encode()).hexdigest(), 16)
-```
-
-**10. Performance Optimization**
-
-```python
-# Compression for trie storage
-import zlib
-
-def compress_trie(trie):
-    serialized = pickle.dumps(trie)
-    compressed = zlib.compress(serialized, level=9)
-    
-    compression_ratio = len(compressed) / len(serialized)
-    print(f"Compression ratio: {compression_ratio:.2%}")
-    
-    return compressed
-
-def decompress_trie(compressed_data):
-    decompressed = zlib.decompress(compressed_data)
-    trie = pickle.loads(decompressed)
-    return trie
-
-# Memory-efficient trie using arrays
-class CompactTrie:
-    def __init__(self):
-        self.nodes = []  # Array of nodes
-        self.children_arrays = []  # Array of children indices
-        self.root_index = 0
-    
-    # Implementation uses arrays instead of dicts
-    # Reduces memory overhead significantly
-```
-
-**11. Monitoring & Metrics**
-
-```python
-metrics = {
-    "autocomplete_latency_ms": Histogram("autocomplete_latency_milliseconds"),
-    "cache_hit_rate": Gauge("cache_hit_rate_percentage"),
-    "trie_size_mb": Gauge("trie_memory_size_megabytes"),
-    "queries_per_second": Counter("autocomplete_queries_total")
-}
-
-@app.before_request
-def start_timer():
-    request.start_time = time.time()
-
-@app.after_request
-def record_metrics(response):
-    latency = (time.time() - request.start_time) * 1000
-    metrics["autocomplete_latency_ms"].observe(latency)
-    metrics["queries_per_second"].inc()
-    
-    return response
-```
-
----
-
-## 12. Design a Payment Processing System (NAVER Pay)
-
-### Requirements
-- 150 triệu users
-- 100M transactions/ngày
-- Multiple currencies support
-- Fraud detection
-- Idempotency for retries
-- 99.999% availability (5 minutes downtime/năm)
-
-### High-Level Architecture
-
-```
-[Client Apps]
-      ↓
-[API Gateway + Rate Limiter]
-      ↓
-[Payment Orchestrator]
-      ↓
-   ┌──┴────────┬─────────┬────────┐
-   ↓           ↓         ↓        ↓
-[Fraud    [Currency] [Ledger] [Notification]
-Detection] Exchange]  Service] Service
-   ↓           ↓         ↓
-[Payment Providers]
-(Stripe, Bank APIs, Card Networks)
-   ↓
-[Transaction DB (Sharded PostgreSQL)]
-   ↓
-[Audit Log (Append-only)]
-```
-
-### Core Components
-
-**1. Payment Request Schema**
-
-```python
-from dataclasses import dataclass
-from enum import Enum
-from decimal import Decimal
-
-class PaymentMethod(Enum):
-    CREDIT_CARD = "credit_card"
-    DEBIT_CARD = "debit_card"
-    BANK_TRANSFER = "bank_transfer"
-    DIGITAL_WALLET = "digital_wallet"
-
-class PaymentStatus(Enum):
-    PENDING = "pending"
-    PROCESSING = "processing"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    REFUNDED = "refunded"
-
-@dataclass
-class PaymentRequest:
-    idempotency_key: str  # Client-generated unique key
-    user_id: int
-    amount: Decimal
-    currency: str  # ISO 4217 (USD, KRW, JPY)
-    payment_method: PaymentMethod
-    payment_details: dict  # Card number, CVV, etc.
-    merchant_id: int
-    order_id: str
-    description: str
-    callback_url: str
-    metadata: dict
-```
-
-**2. Payment Orchestrator**
-
-```python
-from fastapi import FastAPI, HTTPException
-import redis
-import hashlib
-
-app = FastAPI()
-redis_client = redis.Redis(host='localhost', decode_responses=True)
-
-@app.post("/api/v1/payments")
-async def create_payment(payment_request: PaymentRequest):
-    # 1. Idempotency check
-    idempotency_result = check_idempotency(payment_request.idempotency_key)
-    if idempotency_result:
-        return idempotency_result
-    
-    # 2. Validate request
-    validate_payment_request(payment_request)
-    
-    # 3. Fraud detection
-    fraud_score = await check_fraud(payment_request)
-    if fraud_score > 0.8:
-        return {
-            "status": "rejected",
-            "reason": "fraud_detected",
-            "fraud_score": fraud_score
-        }
-    
-    # 4. Currency conversion if needed
-    if payment_request.currency != get_merchant_currency(payment_request.merchant_id):
-        payment_request.amount = await convert_currency(
-            payment_request.amount,
-            payment_request.currency,
-            get_merchant_currency(payment_request.merchant_id)
-        )
-    
-    # 5. Create payment record
-    payment_id = create_payment_record(payment_request)
-    
-    # 6. Process payment with provider
-    try:
-        result = await process_with_provider(payment_request, payment_id)
-        
-        # 7. Update ledger (double-entry bookkeeping)
-        await update_ledger(payment_id, result)
-        
-        # 8. Send notification
-        await send_payment_notification(payment_request.user_id, payment_id, result)
-        
-        # 9. Store result for idempotency
-        store_idempotency_result(payment_request.idempotency_key, result)
-        
-        return result
-        
-    except ProviderError as e:
-        # Handle payment failure
-        mark_payment_failed(payment_id, str(e))
-        raise HTTPException(status_code=500, detail="Payment processing failed")
-
-def check_idempotency(key):
-    # Check if we've seen this request before
-    cached_result = redis_client.get(f"idempotency:{key}")
-    
-    if cached_result:
-        return json.loads(cached_result)
-    
-    return None
-
-def store_idempotency_result(key, result):
-    # Store result for 24 hours
-    redis_client.setex(
-        f"idempotency:{key}",
-        86400,
-        json.dumps(result)
-    )
-```
-
-**3. Fraud Detection System**
-
-```python
-class FraudDetector:
-    def __init__(self):
-        self.ml_model = load_fraud_model()
-        self.rules = load_fraud_rules()
-    
-    async def check_fraud(self, payment_request):
-        # Rule-based checks
-        rule_score = self.check_rules(payment_request)
-        
-        # ML-based scoring
-        ml_score = self.check_ml_model(payment_request)
-        
-        # Combine scores
-        final_score = 0.4 * rule_score + 0.6 * ml_score
-        
-        # Log for review if suspicious
-        if final_score > 0.5:
-            await log_suspicious_transaction(payment_request, final_score)
-        
-        return final_score
-    
-    def check_rules(self, payment_request):
-        score = 0.0
-        
-        # Rule 1: Large transaction from new account
-        account_age = get_account_age(payment_request.user_id)
-        if account_age < 7 and payment_request.amount > 1000000:
-            score += 0.3
-        
-        # Rule 2: Multiple transactions in short time
-        recent_transactions = get_recent_transactions(
-            payment_request.user_id,
-            minutes=30
-        )
-        if len(recent_transactions) > 5:
-            score += 0.2
-        
-        # Rule 3: Unusual location
-        user_location = get_user_location(payment_request.user_id)
-        transaction_location = payment_request.metadata.get('location')
-        
-        if distance(user_location, transaction_location) > 1000:  # km
-            score += 0.15
-        
-        # Rule 4: High-risk merchant category
-        merchant_category = get_merchant_category(payment_request.merchant_id)
-        if merchant_category in HIGH_RISK_CATEGORIES:
-            score += 0.1
-        
-        # Rule 5: Blacklisted card/account
-        if is_blacklisted(payment_request.payment_details):
-            score = 1.0
-        
-        return min(score, 1.0)
-    
-    def check_ml_model(self, payment_request):
-        # Extract features
-        features = extract_fraud_features(payment_request)
-        
-        # Model prediction
-        fraud_probability = self.ml_model.predict_proba(features)[0][1]
-        
-        return fraud_probability
-
-def extract_fraud_features(payment_request):
-    features = {
-        'amount': float(payment_request.amount),
-        'amount_log': np.log1p(float(payment_request.amount)),
-        'hour_of_day': datetime.now().hour,
-        'day_of_week': datetime.now().weekday(),
-        'account_age_days': get_account_age(payment_request.user_id),
-        'previous_transactions_count': get_transaction_count(payment_request.user_id),
-        'average_transaction_amount': get_avg_transaction(payment_request.user_id),
-        'device_type': payment_request.metadata.get('device_type', 'unknown'),
-        'is_vpn': payment_request.metadata.get('is_vpn', False),
-        'payment_method_age_days': get_payment_method_age(payment_request.payment_details),
-        'merchant_risk_score': get_merchant_risk_score(payment_request.merchant_id)
-    }
-    
-    return pd.DataFrame([features])
-```
-
-**4. Double-Entry Ledger System**
-
-```python
-# Database schema
-"""
-CREATE TABLE ledger_entries (
-    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    transaction_id VARCHAR(100) UNIQUE NOT NULL,
-    account_id BIGINT NOT NULL,
-    debit DECIMAL(20, 2),
-    credit DECIMAL(20, 2),
-    balance DECIMAL(20, 2),
-    currency VARCHAR(3),
-    description TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    
-    INDEX idx_account_time (account_id, created_at),
-    INDEX idx_transaction (transaction_id)
-);
-
-CREATE TABLE accounts (
-    account_id BIGINT PRIMARY KEY,
-    user_id BIGINT,
-    account_type ENUM('user_wallet', 'merchant', 'system', 'escrow'),
-    currency VARCHAR(3),
-    balance DECIMAL(20, 2) DEFAULT 0,
-    
-    INDEX idx_user (user_id)
-);
-"""
-
-class LedgerService:
-    def __init__(self, db):
-        self.db = db
-    
-    async def record_payment(self, payment_id, amount, currency, from_account, to_account):
-        # Start transaction
-        async with self.db.transaction():
-            # Debit from payer
-            await self.create_entry(
-                transaction_id=payment_id,
-                account_id=from_account,
-                debit=amount,
-                credit=0,
-                currency=currency,
-                description=f"Payment {payment_id}"
-            )
             
-            # Credit to merchant
-            await self.create_entry(
-                transaction_id=payment_id,
-                account_id=to_account,
-                debit=0,
-                credit=amount,
-                currency=currency,
-                description=f"Payment {payment_id}"
-            )
+        hash_key = hash(key)
+        
+        # Binary search for first node >= hash_key
+        idx = bisect.bisect_right(self.sorted_keys, hash_key)
+        
+        # Wrap around
+        if idx == len(self.sorted_keys):
+            idx = 0
             
-            # Update account balances
-            await self.update_balance(from_account, -amount)
-            await self.update_balance(to_account, amount)
-    
-    async def create_entry(self, transaction_id, account_id, debit, credit, currency, description):
-        # Get current balance
-        current_balance = await self.get_balance(account_id)
-        new_balance = current_balance - debit + credit
-        
-        await self.db.execute("""
-            INSERT INTO ledger_entries
-            (transaction_id, account_id, debit, credit, balance, currency, description)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, transaction_id, account_id, debit, credit, new_balance, currency, description)
-        
-        return new_balance
-    
-    async def update_balance(self, account_id, amount_delta):
-        await self.db.execute("""
-            UPDATE accounts
-            SET balance = balance + ?
-            WHERE account_id = ?
-        """, amount_delta, account_id)
-    
-    async def get_balance(self, account_id):
-        result = await self.db.execute("""
-            SELECT balance FROM accounts WHERE account_id = ?
-        """, account_id)
-        
-        return result['balance'] if result else 0
+        return self.ring[self.sorted_keys[idx]]
 ```
 
-**5. Payment Provider Integration**
+### 4.2 Eviction Policies - Trade-offs
 
+| Policy | When to use | Trade-off |
+|--------|-------------|-----------|
+| **LRU** | General purpose | May evict freq accessed but not recent |
+| **LFU** | Stable access patterns | Slow to adapt to changes |
+| **TTL** | Time-sensitive data | May keep stale data until expire |
+| **LRU + TTL** | Production choice | Balances both |
+
+### 4.3 Cache Patterns
+
+**Cache-Aside (Read-through)**
 ```python
-class PaymentProvider(ABC):
-    @abstractmethod
-    async def charge(self, payment_request):
-        pass
-    
-    @abstractmethod
-    async def refund(self, payment_id, amount):
-        pass
-
-class StripeProvider(PaymentProvider):
-    def __init__(self, api_key):
-        self.stripe = stripe
-        self.stripe.api_key = api_key
-    
-    async def charge(self, payment_request):
-        try:
-            # Create payment intent
-            intent = await self.stripe.PaymentIntent.create_async(
-                amount=int(payment_request.amount * 100),  # Convert to cents
-                currency=payment_request.currency.lower(),
-                payment_method=payment_request.payment_details['payment_method_id'],
-                confirm=True,
-                description=payment_request.description,
-                metadata={
-                    'order_id': payment_request.order_id,
-                    'user_id': str(payment_request.user_id)
-                }
-            )
-            
-            return {
-                'provider_transaction_id': intent.id,
-                'status': 'completed' if intent.status == 'succeeded' else 'failed',
-                'amount': payment_request.amount,
-                'currency': payment_request.currency
-            }
-            
-        except stripe.error.CardError as e:
-            # Card declined
-            return {
-                'status': 'failed',
-                'error_code': e.code,
-                'error_message': str(e)
-            }
-        
-        except Exception as e:
-            # Other errors
-            raise ProviderError(f"Stripe error: {str(e)}")
-    
-    async def refund(self, payment_id, amount):
-        intent_id = get_provider_transaction_id(payment_id)
-        
-        refund = await self.stripe.Refund.create_async(
-            payment_intent=intent_id,
-            amount=int(amount * 100)
-        )
-        
-        return refund
-
-# Provider factory
-class PaymentProviderFactory:
-    providers = {
-        'stripe': StripeProvider,
-        'bank_transfer': BankTransferProvider,
-        'digital_wallet': DigitalWalletProvider
-    }
-    
-    @classmethod
-    def get_provider(cls, payment_method):
-        provider_class = cls.providers.get(payment_method)
-        if not provider_class:
-            raise ValueError(f"Unsupported payment method: {payment_method}")
-        
-        return provider_class()
-```
-
-**6. Currency Exchange Service**
-
-```python
-class CurrencyExchangeService:
-    def __init__(self):
-        self.rates_cache = {}
-        self.cache_ttl = 300  # 5 minutes
-    
-    async def convert(self, amount, from_currency, to_currency):
-        if from_currency == to_currency:
-            return amount
-        
-        # Get exchange rate
-        rate = await self.get_rate(from_currency, to_currency)
-        
-        # Convert
-        converted_amount = Decimal(str(amount)) * Decimal(str(rate))
-        
-        # Round to 2 decimal places
-        return round(converted_amount, 2)
-    
-    async def get_rate(self, from_currency, to_currency):
-        cache_key = f"{from_currency}_{to_currency}"
-        
-        # Check cache
-        if cache_key in self.rates_cache:
-            cached_rate, timestamp = self.rates_cache[cache_key]
-            if time.time() - timestamp < self.cache_ttl:
-                return cached_rate
-        
-        # Fetch from external API
-        rate = await self.fetch_rate_from_api(from_currency, to_currency)
-        
-        # Cache
-        self.rates_cache[cache_key] = (rate, time.time())
-        
-        # Store in Redis for sharing across instances
-        redis_client.setex(
-            f"exchange_rate:{cache_key}",
-            self.cache_ttl,
-            str(rate)
-        )
-        
-        return rate
-    
-    async def fetch_rate_from_api(self, from_currency, to_currency):
-        # Use external API (e.g., Open Exchange Rates)
-        async with aiohttp.ClientSession() as session:
-            url = f"https://api.exchangerate.host/convert?from={from_currency}&to={to_currency}"
-            
-            async with session.get(url) as response:
-                data = await response.json()
-                return data['result']
-```
-
-**7. Transaction State Machine**
-
-```python
-class PaymentStateMachine:
-    states = {
-        'created': ['pending', 'cancelled'],
-        'pending': ['processing', 'failed'],
-        'processing': ['completed', 'failed'],
-        'completed': ['refund_pending'],
-        'refund_pending': ['refunded', 'refund_failed'],
-        'refunded': [],
-        'failed': [],
-        'cancelled': []
-    }
-    
-    def __init__(self, payment_id):
-        self.payment_id = payment_id
-        self.current_state = self.get_current_state()
-    
-    def transition(self, new_state):
-        if new_state not in self.states.get(self.current_state, []):
-            raise InvalidStateTransition(
-                f"Cannot transition from {self.current_state} to {new_state}"
-            )
-        
-        # Update database
-        db.execute("""
-            UPDATE payments
-            SET status = ?, updated_at = NOW()
-            WHERE payment_id = ?
-        """, new_state, self.payment_id)
-        
-        # Log transition
-        log_state_transition(self.payment_id, self.current_state, new_state)
-        
-        self.current_state = new_state
-        
-        return new_state
-```
-
-**8. Webhook Handling**
-
-```python
-@app.post("/api/v1/webhooks/stripe")
-async def stripe_webhook(request: Request):
-    # Verify signature
-    signature = request.headers.get('Stripe-Signature')
-    payload = await request.body()
-    
-    try:
-        event = stripe.Webhook.construct_event(
-            payload, signature, STRIPE_WEBHOOK_SECRET
-        )
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid payload")
-    except stripe.error.SignatureVerificationError:
-        raise HTTPException(status_code=400, detail="Invalid signature")
-    
-    # Handle event
-    if event['type'] == 'payment_intent.succeeded':
-        await handle_payment_success(event['data']['object'])
-    elif event['type'] == 'payment_intent.payment_failed':
-        await handle_payment_failure(event['data']['object'])
-    elif event['type'] == 'charge.refunded':
-        await handle_refund(event['data']['object'])
-    
-    return {'status': 'success'}
-
-async def handle_payment_success(payment_intent):
-    payment_id = payment_intent['metadata']['order_id']
-    
-    # Update payment status
-    state_machine = PaymentStateMachine(payment_id)
-    state_machine.transition('completed')
-    
-    # Send notification
-    await send_payment_success_notification(payment_id)
-    
-    # Trigger order fulfillment
-    await trigger_order_fulfillment(payment_id)
-```
-
-**9. Refund Processing**
-
-```python
-@app.post("/api/v1/payments/{payment_id}/refund")
-async def refund_payment(payment_id: str, refund_amount: Decimal):
-    # Get payment details
-    payment = get_payment(payment_id)
-    
-    if payment['status'] != 'completed':
-        raise HTTPException(400, "Payment not completed")
-    
-    # Validate refund amount
-    if refund_amount > payment['amount']:
-        raise HTTPException(400, "Refund amount exceeds payment amount")
-    
-    # Create refund record
-    refund_id = create_refund_record(payment_id, refund_amount)
-    
-    try:
-        # Process refund with provider
-        provider = PaymentProviderFactory.get_provider(payment['payment_method'])
-        refund_result = await provider.refund(payment_id, refund_amount)
-        
-        # Update ledger
-        await ledger_service.record_refund(
-            refund_id,
-            refund_amount,
-            payment['currency'],
-            payment['merchant_account'],
-            payment['user_account']
-        )
-        
-        # Update state
-        state_machine = PaymentStateMachine(payment_id)
-        state_machine.transition('refunded')
-        
-        # Notify user
-        await send_refund_notification(payment['user_id'], payment_id, refund_amount)
-        
-        return {
-            'refund_id': refund_id,
-            'status': 'refunded',
-            'amount': refund_amount
-        }
-        
-    except Exception as e:
-        mark_refund_failed(refund_id, str(e))
-        raise HTTPException(500, f"Refund failed: {str(e)}")
-```
-
-**10. High Availability & Disaster Recovery**
-
-```python
-# Multi-region setup
-regions = {
-    'primary': {
-        'db': 'us-west-2-primary.rds.amazonaws.com',
-        'redis': 'us-west-2-redis.cache.amazonaws.com'
-    },
-    'secondary': {
-        'db': 'eu-west-1-secondary.rds.amazonaws.com',
-        'redis': 'eu-west-1-redis.cache.amazonaws.com'
-    }
-}
-
-# Circuit breaker for external services
-class CircuitBreaker:
-    def __init__(self, failure_threshold=5, timeout=60):
-        self.failure_count = 0
-        self.failure_threshold = failure_threshold
-        self.timeout = timeout
-        self.last_failure_time = None
-        self.state = 'closed'  # closed, open, half-open
-    
-    async def call(self, func, *args, **kwargs):
-        if self.state == 'open':
-            if time.time() - self.last_failure_time > self.timeout:
-                self.state = 'half-open'
-            else:
-                raise CircuitBreakerOpen("Circuit breaker is open")
-        
-        try:
-            result = await func(*args, **kwargs)
-            
-            if self.state == 'half-open':
-                self.state = 'closed'
-                self.failure_count = 0
-            
-            return result
-            
-        except Exception as e:
-            self.failure_count += 1
-            self.last_failure_time = time.time()
-            
-            if self.failure_count >= self.failure_threshold:
-                self.state = 'open'
-            
-            raise e
-
-# Database sharding
-def get_shard(user_id, num_shards=16):
-    shard_id = user_id % num_shards
-    return f"payment_db_shard_{shard_id}"
-
-def get_db_connection(user_id):
-    shard = get_shard(user_id)
-    return db_pool.get_connection(shard)
-```
-
-**11. Compliance & Auditing**
-
-```python
-# PCI DSS Compliance: Never store full card numbers
-def tokenize_card(card_number):
-    # Use payment provider's tokenization
-    token = stripe.Token.create(
-        card={
-            "number": card_number,
-            "exp_month": exp_month,
-            "exp_year": exp_year,
-            "cvc": cvc
-        }
-    )
-    
-    return token.id
-
-# Audit logging
-async def log_payment_event(event_type, payment_id, details):
-    audit_entry = {
-        'event_type': event_type,
-        'payment_id': payment_id,
-        'timestamp': datetime.now().isoformat(),
-        'details': details,
-        'ip_address': get_client_ip(),
-        'user_agent': get_user_agent()
-    }
-    
-    # Write to append-only audit log
-    await audit_log_db.insert('audit_logs', audit_entry)
-    
-    # Also stream to Kafka for real-time monitoring
-    kafka_producer.send('payment_audit_log', audit_entry)
-
-# GDPR compliance: Data export
-async def export_user_payment_data(user_id):
-    payments = await db.query("""
-        SELECT payment_id, amount, currency, status, created_at
-        FROM payments
-        WHERE user_id = ?
-    """, user_id)
-    
-    # Anonymize sensitive data
-    for payment in payments:
-        payment['payment_method'] = "****"  # Redact
-    
-    return payments
-```
-
----
-
-## 13. Design a Distributed Cache System
-
-### Requirements
-- 300 triệu users
-- 10 tỷ reads/ngày
-- Eviction policies (LRU, LFU, TTL)
-- Replication
-- Consistency guarantees
-
-### High-Level Architecture
-
-```
-[Application Servers]
-      ↓
-[Cache Client Library]
-      ↓
-[Load Balancer]
-      ↓
-[Cache Cluster]
-   ┌──┴──────┬────┬────┐
-   ↓         ↓    ↓    ↓
-[Shard 1] [S2] [S3] [S4]
-(Master+Slaves)
-   ↓
-[Persistence Layer]
-(AOF/RDB Snapshots)
-```
-
-### Core Components
-
-**1. Cache Architecture**
-
-```python
-# Redis Cluster configuration
-redis_cluster_config = {
-    'nodes': [
-        {'host': 'node1', 'port': 7000},
-        {'host': 'node2', 'port': 7001},
-        {'host': 'node3', 'port': 7002},
-        {'host': 'node4', 'port': 7003},
-        {'host': 'node5', 'port': 7004},
-        {'host': 'node6', 'port': 7005}
-    ],
-    'replicas': 2,  # Each master has 2 slaves
-    'max_connections': 50,
-    'socket_keepalive': True,
-    'socket_connect_timeout': 5
-}
-
-from rediscluster import RedisCluster
-
-cache_client = RedisCluster(
-    startup_nodes=redis_cluster_config['nodes'],
-    decode_responses=True,
-    skip_full_coverage_check=True
-)
-```
-
-**2. Cache Client Library**
-
-```python
-class CacheClient:
-    def __init__(self, redis_cluster):
-        self.redis = redis_cluster
-        self.local_cache = {}  # L1 cache (in-memory)
-        self.local_cache_size = 1000
-        self.stats = {
-            'hits': 0,
-            'misses': 0,
-            'l1_hits': 0,
-            'l2_hits': 0
-        }
-    
-    def get(self, key):
-        # L1 cache (local memory)
-        if key in self.local_cache:
-            self.stats['l1_hits'] += 1
-            self.stats['hits'] += 1
-            return self.local_cache[key]
-        
-        # L2 cache (Redis cluster)
-        value = self.redis.get(key)
-        
-        if value is not None:
-            self.stats['l2_hits'] += 1
-            self.stats['hits'] += 1
-            
-            # Populate L1 cache
-            self.set_local(key, value)
-            
-            return value
-        
-        self.stats['misses'] += 1
-        return None
-    
-    def set(self, key, value, ttl=None):
-        # Set in Redis
-        if ttl:
-            self.redis.setex(key, ttl, value)
-        else:
-            self.redis.set(key, value)
-        
-        # Set in local cache
-        self.set_local(key, value)
-    
-    def set_local(self, key, value):
-        # LRU eviction for local cache
-        if len(self.local_cache) >= self.local_cache_size:
-            # Remove oldest entry
-            oldest_key = next(iter(self.local_cache))
-            del self.local_cache[oldest_key]
-        
-        self.local_cache[key] = value
-    
-    def delete(self, key):
-        # Delete from Redis
-        self.redis.delete(key)
-        
-        # Delete from local cache
-        if key in self.local_cache:
-            del self.local_cache[key]
-    
-    def get_stats(self):
-        hit_rate = self.stats['hits'] / (self.stats['hits'] + self.stats['misses'])
-        return {
-            **self.stats,
-            'hit_rate': hit_rate
-        }
-```
-
-**3. Eviction Policies**
-
-```python
-# LRU (Least Recently Used) Implementation
-class LRUCache:
-    def __init__(self, capacity):
-        self.capacity = capacity
-        self.cache = {}
-        self.order = []  # Track access order
-    
-    def get(self, key):
-        if key in self.cache:
-            # Move to end (most recently used)
-            self.order.remove(key)
-            self.order.append(key)
-            return self.cache[key]
-        return None
-    
-    def put(self, key, value):
-        if key in self.cache:
-            # Update existing
-            self.order.remove(key)
-        elif len(self.cache) >= self.capacity:
-            # Evict least recently used
-            lru_key = self.order.pop(0)
-            del self.cache[lru_key]
-        
-        self.cache[key] = value
-        self.order.append(key)
-
-# LFU (Least Frequently Used) Implementation
-class LFUCache:
-    def __init__(self, capacity):
-        self.capacity = capacity
-        self.cache = {}
-        self.frequency = {}  # Track access frequency
-        self.min_freq = 0
-        self.freq_to_keys = collections.defaultdict(OrderedDict)
-    
-    def get(self, key):
-        if key not in self.cache:
-            return None
-        
-        # Update frequency
-        freq = self.frequency[key]
-        self.frequency[key] = freq + 1
-        
-        # Move to next frequency bucket
-        del self.freq_to_keys[freq][key]
-        if not self.freq_to_keys[freq]:
-            del self.freq_to_keys[freq]
-            if freq == self.min_freq:
-                self.min_freq += 1
-        
-        self.freq_to_keys[freq + 1][key] = True
-        
-        return self.cache[key]
-    
-    def put(self, key, value):
-        if self.capacity == 0:
-            return
-        
-        if key in self.cache:
-            # Update existing
-            self.cache[key] = value
-            self.get(key)
-            return
-        
-        if len(self.cache) >= self.capacity:
-            # Evict least frequently used
-            evict_key = next(iter(self.freq_to_keys[self.min_freq]))
-            del self.freq_to_keys[self.min_freq][evict_key]
-            if not self.freq_to_keys[self.min_freq]:
-                del self.freq_to_keys[self.min_freq]
-            del self.cache[evict_key]
-            del self.frequency[evict_key]
-        
-        # Add new key
-        self.cache[key] = value
-        self.frequency[key] = 1
-        self.freq_to_keys[1][key] = True
-        self.min_freq = 1
-
-# TTL (Time To Live) with automatic expiration
-# Redis handles this natively with EXPIRE command
-def set_with_ttl(key, value, ttl_seconds):
-    redis.setex(key, ttl_seconds, value)
-```
-
-**4. Cache Patterns**
-
-```python
-# Cache-Aside (Lazy Loading)
 def get_user(user_id):
-    # Try cache first
-    cached_user = cache.get(f"user:{user_id}")
-    if cached_user:
-        return json.loads(cached_user)
+    """
+    Pattern phổ biến nhất.
+    Pro: Simple, app controls caching logic
+    Con: First request always slow (cache miss)
+    """
+    cached = cache.get(f"user:{user_id}")
+    if cached:
+        return cached
     
-    # Cache miss, query database
     user = db.query("SELECT * FROM users WHERE id = ?", user_id)
-    
-    # Populate cache
-    cache.set(f"user:{user_id}", json.dumps(user), ttl=3600)
-    
+    cache.set(f"user:{user_id}", user, ttl=3600)
     return user
-
-# Write-Through
-def update_user(user_id, data):
-    # Update database
-    db.execute("UPDATE users SET ... WHERE id = ?", data, user_id)
-    
-    # Update cache
-    cache.set(f"user:{user_id}", json.dumps(data), ttl=3600)
-
-# Write-Behind (Write-Back)
-def update_user_async(user_id, data):
-    # Update cache immediately
-    cache.set(f"user:{user_id}", json.dumps(data), ttl=3600)
-    
-    # Queue DB update for later
-    queue.enqueue('db_updates', {'user_id': user_id, 'data': data})
-
-# Read-Through
-class ReadThroughCache:
-    def get(self, key, loader_func):
-        # Check cache
-        value = cache.get(key)
-        if value:
-            return value
-        
-        # Load from source
-        value = loader_func()
-        
-        # Cache for next time
-        cache.set(key, value)
-        
-        return value
 ```
 
-**5. Cache Invalidation Strategies**
-
+**Write-Through**
 ```python
-# Time-based invalidation
-def invalidate_after_time(key, ttl=3600):
-    cache.expire(key, ttl)
+def update_user(user_id, data):
+    """
+    Write to cache AND db synchronously.
+    Pro: Cache always fresh
+    Con: Write latency increases
+    """
+    db.update("UPDATE users SET ... WHERE id = ?", user_id, data)
+    cache.set(f"user:{user_id}", data, ttl=3600)
+```
 
-# Event-based invalidation
-def on_user_update(user_id):
-    # Invalidate user cache
-    cache.delete(f"user:{user_id}")
-    
-    # Invalidate related caches
-    cache.delete(f"user_posts:{user_id}")
-    cache.delete(f"user_friends:{user_id}")
+**Write-Behind (Write-Back)**
+```python
+def update_user(user_id, data):
+    """
+    Write to cache first, async to db.
+    Pro: Fast writes
+    Con: Data loss risk if cache crashes
+    """
+    cache.set(f"user:{user_id}", data)
+    queue.publish("user_updates", {"id": user_id, "data": data})
+    # Background worker writes to DB
+```
 
-# Cache stampede prevention (using locks)
-def get_with_lock(key, loader_func, lock_timeout=10):
-    # Try to get from cache
+---
+
+## 📈 Phase 5: Scaling & Bottlenecks
+
+### Cache Stampede Problem
+
+**Scenario**: Popular key expires → 1000 requests hit DB simultaneously
+
+**Solutions**:
+```python
+def get_with_lock(key):
+    """
+    Khi cache miss, chỉ 1 request đi DB, còn lại wait.
+    """
     value = cache.get(key)
     if value:
         return value
     
-    # Acquire lock
-    lock_key = f"lock:{key}"
-    if cache.set(lock_key, "1", nx=True, ex=lock_timeout):
+    lock = cache.lock(f"lock:{key}", timeout=5)
+    if lock.acquire():
         try:
-            # This thread loads data
-            value = loader_func()
-            cache.set(key, value, ex=3600)
+            # Double check
+            value = cache.get(key)
+            if value:
+                return value
+            
+            # Only this request hits DB
+            value = db.query(key)
+            cache.set(key, value, ttl=3600)
             return value
         finally:
-            cache.delete(lock_key)
+            lock.release()
     else:
         # Wait and retry
         time.sleep(0.1)
-        return get_with_lock(key, loader_func, lock_timeout)
+        return cache.get(key)  # Should exist now
 ```
-
-**6. Consistent Hashing**
-
-```python
-import hashlib
-
-class ConsistentHashRing:
-    def __init__(self, nodes, virtual_nodes=150):
-        self.virtual_nodes = virtual_nodes
-        self.ring = {}
-        self.sorted_keys = []
-        
-        for node in nodes:
-            self.add_node(node)
-    
-    def add_node(self, node):
-        for i in range(self.virtual_nodes):
-            virtual_key = f"{node}:{i}"
-            hash_key = self._hash(virtual_key)
-            self.ring[hash_key] = node
-            self.sorted_keys.append(hash_key)
-        
-        self.sorted_keys.sort()
-    
-    def remove_node(self, node):
-        for i in range(self.virtual_nodes):
-            virtual_key = f"{node}:{i}"
-            hash_key = self._hash(virtual_key)
-            del self.ring[hash_key]
-            self.sorted_keys.remove(hash_key)
-    
-    def get_node(self, key):
-        if not self.ring:
-            return None
-        
-        hash_key = self._hash(key)
-        
-        # Binary search for the first node >= hash_key
-        index = bisect.bisect_right(self.sorted_keys, hash_key)
-        
-        # Wrap around to first node if necessary
-        if index == len(self.sorted_keys):
-            index = 0
-        
-        return self.ring[self.sorted_keys[index]]
-    
-    def _hash(self, key):
-        return int(hashlib.md5(key.encode()).hexdigest(), 16)
-```
-
-Tôi đã tạo tài liệu chi tiết cho 3 câu hỏi đầu tiên (11-13) trong danh sách mở rộng. Tài liệu bao gồm:
-
-**Câu 11 - Autocomplete System:**
-- Trie data structure implementation
-- Multilingual support (Korean, Japanese, English)
-- Personalization với ML
-- Trending queries với real-time processing
-- Fuzzy matching & typo correction
-- Caching strategies
-
-**Câu 12 - Payment Processing System:**
-- Payment orchestrator
-- Fraud detection (rule-based + ML)
-- Double-entry ledger system
-- Multiple payment providers
-- Currency exchange
-- Idempotency handling
-- PCI DSS compliance
-
-**Câu 13 - Distributed Cache:**
-- Cache client library với L1/L2 caching
-- Eviction policies (LRU, LFU, TTL)
-- Cache patterns (Cache-Aside, Write-Through, Write-Behind)
-- Consistent hashing
-- Cache invalidation strategies
 
 ---
 
-## 14. Design a Rate Limiter for APIs
+## 💡 Phase 6: Interview Tips
 
-### Requirements
-- 200 triệu users
-- Enforce limits per user/IP (e.g., 1000 requests/min)
-- Distributed across regions
-- Handle bursts
-- No single points of failure
+### Common Questions
 
-### High-Level Architecture
+1. **"Cache vs Database consistency?"**
+   - Accept eventual consistency for most cases
+   - For critical data → write-through or invalidate
 
-```
-[API Requests]
-      ↓
-[API Gateway]
-      ↓
-[Rate Limiter Middleware]
-      ↓
-[Redis Cluster] (for counters)
-      ↓
-[Backend Services]
-```
+2. **"Hot key problem?"**
+   - Replicate hot keys to multiple nodes
+   - Add random suffix to spread: `key:1`, `key:2`
 
-### Core Components
+3. **"How to warm cache after restart?"**
+   - Lazy loading (gradual)
+   - Pre-warming script
 
-**1. Token Bucket Algorithm**
+### 🔧 Redis Internals - Interview Deep Dive
 
 ```python
-import time
-import redis
+# Redis Data Structures và Khi Nào Dùng
 
-class TokenBucket:
-    def __init__(self, redis_client, capacity, refill_rate):
-        self.redis = redis_client
-        self.capacity = capacity  # Max tokens
-        self.refill_rate = refill_rate  # Tokens per second
-    
-    def allow_request(self, key):
-        now = time.time()
-        
-        # Lua script for atomic operation
-        lua_script = """
-        local key = KEYS[1]
-        local capacity = tonumber(ARGV[1])
-        local refill_rate = tonumber(ARGV[2])
-        local now = tonumber(ARGV[3])
-        local requested = tonumber(ARGV[4])
-        
-        local bucket = redis.call('HMGET', key, 'tokens', 'last_refill')
-        local tokens = tonumber(bucket[1])
-        local last_refill = tonumber(bucket[2])
-        
-        if tokens == nil then
-            tokens = capacity
-            last_refill = now
-        end
-        
-        -- Refill tokens based on time elapsed
-        local time_elapsed = now - last_refill
-        tokens = math.min(capacity, tokens + time_elapsed * refill_rate)
-        
-        local allowed = 0
-        if tokens >= requested then
-            tokens = tokens - requested
-            allowed = 1
-        end
-        
-        -- Update bucket
-        redis.call('HMSET', key, 'tokens', tokens, 'last_refill', now)
-        redis.call('EXPIRE', key, 3600)
-        
-        return allowed
-        """
-        
-        result = self.redis.eval(
-            lua_script,
-            1,  # Number of keys
-            key,
-            self.capacity,
-            self.refill_rate,
-            now,
-            1  # Request 1 token
-        )
-        
-        return result == 1
-
-# Usage
-rate_limiter = TokenBucket(redis_client, capacity=100, refill_rate=10)  # 100 tokens, refill 10/sec
-
-if rate_limiter.allow_request(f"user:{user_id}"):
-    # Process request
-    pass
-else:
-    # Return 429 Too Many Requests
-    return {"error": "Rate limit exceeded"}
+REDIS_DATA_STRUCTURES = {
+    'STRING': {
+        'use_case': 'Simple key-value, counters, sessions',
+        'example': 'SET user:123:session "abc" EX 3600',
+        'complexity': 'O(1)',
+    },
+    'HASH': {
+        'use_case': 'Object storage, user profiles',
+        'example': 'HSET user:123 name "John" age 25',
+        'complexity': 'O(1) per field',
+        'why': 'Memory efficient for small hashes (<512 entries)',
+    },
+    'LIST': {
+        'use_case': 'Queues, recent items, activity feeds',
+        'example': 'LPUSH recent:user:123 "action1"',
+        'complexity': 'O(1) push/pop, O(n) index',
+    },
+    'SET': {
+        'use_case': 'Unique items, tags, followers',
+        'example': 'SADD user:123:followers 456 789',
+        'complexity': 'O(1) add/remove/check',
+    },
+    'SORTED_SET': {
+        'use_case': 'Leaderboards, range queries, autocomplete',
+        'example': 'ZADD leaderboard 1000 "player1"',
+        'complexity': 'O(log n) add, O(log n + m) range',
+        'why': 'Best for ranking and top-N queries',
+    },
+}
 ```
 
-**2. Sliding Window Log**
+### 🗄️ Cache Monitoring & Metrics
+
+| Metric | What It Tells You | Alert Threshold |
+|--------|-------------------|-----------------|
+| **Hit Rate** | Cache effectiveness | < 80% = investigate |
+| **Memory Usage** | Capacity planning | > 80% = add nodes |
+| **Eviction Count** | Cache too small | Increasing = bad |
+| **Connected Clients** | Load distribution | Spikes = potential issue |
+| **Latency p99** | Performance | > 10ms = investigate |
+
+```python
+class CacheMonitor:
+    """
+    Production cache monitoring.
+    Integrate with Prometheus/Grafana.
+    """
+    
+    def collect_metrics(self):
+        info = self.redis.info()
+        
+        return {
+            # Hit rate
+            'hit_rate': info['keyspace_hits'] / (
+                info['keyspace_hits'] + info['keyspace_misses']
+            ),
+            
+            # Memory
+            'memory_used_gb': info['used_memory'] / (1024**3),
+            'memory_peak_gb': info['used_memory_peak'] / (1024**3),
+            'memory_fragmentation_ratio': info['mem_fragmentation_ratio'],
+            
+            # Performance
+            'connected_clients': info['connected_clients'],
+            'blocked_clients': info['blocked_clients'],
+            'ops_per_sec': info['instantaneous_ops_per_sec'],
+            
+            # Eviction
+            'evicted_keys': info['evicted_keys'],
+            'expired_keys': info['expired_keys'],
+        }
+    
+    def check_health(self, metrics):
+        alerts = []
+        
+        if metrics['hit_rate'] < 0.80:
+            alerts.append(f"Low cache hit rate: {metrics['hit_rate']:.2%}")
+        
+        if metrics['memory_fragmentation_ratio'] > 1.5:
+            alerts.append("High memory fragmentation - restart recommended")
+        
+        if metrics['evicted_keys'] > self.last_evicted + 1000:
+            alerts.append("High eviction rate - increase capacity")
+        
+        return alerts
+```
+
+### ⚠️ Failure Scenarios & Handling
+
+| Failure | Impact | Detection | Recovery |
+|---------|--------|-----------|----------|
+| **Single node crash** | 1/N keys unavailable | Sentinel detects | Auto-failover to replica |
+| **Network partition** | Split brain possible | Health checks fail | Quorum-based leader election |
+| **Memory exhaustion** | Evictions or OOM kill | Memory alerts | Vertical scale or shard |
+| **Hot key saturation** | One shard overloaded | Latency spike | Key replication or sharding |
+| **Full cluster restart** | Cold cache | All nodes down | Pre-warming from DB |
+
+```python
+class RedisClusterWithFailover:
+    """
+    Production Redis cluster client với automatic failover.
+    """
+    
+    def __init__(self):
+        self.primary_cluster = RedisCluster(startup_nodes=[
+            {'host': 'redis-1', 'port': 6379},
+            {'host': 'redis-2', 'port': 6379},
+            {'host': 'redis-3', 'port': 6379},
+        ])
+        
+        self.backup_cluster = RedisCluster(startup_nodes=[
+            {'host': 'redis-backup-1', 'port': 6379},
+        ])
+        
+        self.circuit_breaker = CircuitBreaker(
+            failure_threshold=5,
+            recovery_timeout_sec=30
+        )
+    
+    async def get(self, key: str):
+        # Try primary with circuit breaker
+        if self.circuit_breaker.is_closed():
+            try:
+                return await self.primary_cluster.get(key)
+            except RedisClusterException as e:
+                self.circuit_breaker.record_failure()
+                logger.error(f"Primary cluster error: {e}")
+        
+        # Fallback to backup
+        try:
+            return await self.backup_cluster.get(key)
+        except RedisClusterException as e:
+            logger.error(f"Backup cluster error: {e}")
+            return None  # Graceful degradation
+```
+
+### 🌍 Real-World Case Study: Twitter (X) Cache Architecture
+
+| Aspect | Twitter's Approach | Learning |
+|--------|-------------------|----------|
+| **Scale** | 100TB+ cached data | Need horizontal sharding |
+| **Cache layers** | L1 (local) + L2 (Redis) + L3 (Memcached) | Multi-tier for hot data |
+| **Hot timelines** | Pre-computed fan-out | Trade write cost for read speed |
+| **Consistency** | Eventually consistent, ~5s lag | Acceptable for social feed |
+| **Eviction** | LRU + TTL | Balance freshness and hit rate |
+
+**Key Takeaways:**
+1. **Multi-layer caching** - Local → Redis → Persistent cache
+2. **Accept eventual consistency** - Most use cases don't need strong
+3. **Pre-compute hot data** - Timeline fan-out on write
+4. **Monitor hit rates obsessively** - 1% drop = significant infrastructure cost
+
+# 14. Rate Limiter
+
+> **Ví dụ thực tế**: API Gateway limits, DDoS protection  
+> **Thời gian phỏng vấn**: 35 phút (simpler than others)
+
+## 🎯 Phase 1: Understand the Problem (3 phút)
+
+### Requirements
+- **FR1**: Limit requests per user/IP/API key
+- **FR2**: Different limits for different APIs
+- **FR3**: Return clear error when limited
+- **NFR1**: Minimal latency overhead (<1ms)
+- **NFR2**: Distributed across servers
+
+### Clarifying Questions (ngắn nhưng điểm cao)
+
+| Câu hỏi | Tại sao quan trọng | Giả định |
+|--------|---------------------|----------|
+| "Limit theo cái gì?" (IP/user/api_key) | Key design quyết định fairness | Support cả 3 |
+| "Burst có được phép không?" | Chọn Token Bucket vs Leaky Bucket | Cho phép burst ngắn |
+| "Limit global hay per-region?" | Multi-region làm khó consistency | Per-region + optional global |
+| "Có tier (free/premium) không?" | Config + cache policy khác | Có |
+| "Cần header chuẩn không?" | Client retry/backoff | Có |
+
+> 💡 Key insight: Rate limiter là bài về **atomicity + hot path latency**. Nếu không atomic → vượt limit; nếu chậm → phá SLO của toàn hệ thống.
+
+---
+
+## 📊 Phase 2: Capacity Estimation (3 phút)
+
+### Quick math (đủ dùng trong interview)
+
+Giả sử:
+- Peak traffic qua Gateway: **200K RPS**
+- Unique keys active trong 1 phút: **~10M** (user + IP + api_key)
+
+**Redis ops**:
+- Token Bucket / Sliding Window Counter dùng Lua: ~1 `EVAL`/request
+- 200K RPS → 200K `EVAL`/sec → cần **Redis Cluster + sharding**
+
+**Memory cho state** (ước lượng):
+- Mỗi key lưu vài counters + timestamp + overhead
+- Rough: ~100 bytes/key → 10M keys ≈ ~1GB (chưa tính replication)
+
+> 💡 Hệ quả thiết kế: luôn có **TTL**, luôn **stateless gateway**, và tránh “mỗi request gọi nhiều service”.
+
+---
+
+## 🏗️ Phase 3: High-Level Design
+
+### Where to place rate limiter?
+
+```
+Option 1: API Gateway (recommended)
+┌────────┐     ┌────────────┐     ┌──────────┐
+│ Client │────▶│ API Gateway│────▶│ Backend  │
+│        │     │ + Limiter  │     │          │
+└────────┘     └────────────┘     └──────────┘
+
+Option 2: Middleware trong mỗi service
+Option 3: Sidecar proxy (Envoy, Istio)
+```
+
+### Architecture Overview (Recommended)
+
+```
+┌────────┐   ┌───────────────────┐   ┌────────────────────────┐   ┌──────────┐
+│ Client │──▶│ API Gateway/LB     │──▶│ Rate Limiter Module     │──▶│ Backend  │
+└────────┘   │ (auth, routing)    │   │ (stateless, fast)       │   └──────────┘
+             └─────────┬─────────┘   └───────────┬────────────┘
+                       │                         │
+                       │                         ▼
+                       │                 ┌──────────────────┐
+                       │                 │ Redis Cluster     │
+                       │                 │ (atomic via Lua)  │
+                       │                 └──────────────────┘
+                       │
+                       ▼
+             ┌───────────────────┐
+             │ Config Store       │
+             │ (DB + cache)       │
+             └───────────────────┘
+
+Optional (multi-region):
+- Local limit (region Redis) cho latency
+- Global limit (async) cho abuse control (eventual)
+```
+
+### Key Design (quan trọng hơn thuật toán)
+
+**Key format** (dễ debug, dễ shard):
+
+```
+rl:{scope}:{subject}:{route}:{algo}
+
+Examples:
+- rl:user:123:/v1/payments:tb
+- rl:ip:203.0.113.10:/v1/search:sw
+- rl:apikey:abc123:/v1/export:tb
+```
+
+**Priority** khi chọn key (đề xuất):
+1) `api_key` (B2B)
+2) `user_id` (authenticated)
+3) `ip` (anonymous)
+
+> 💡 Pitfall: NAT làm IP share giữa nhiều user → IP-limit phải thấp hơn, và nên “đệm” thêm user-limit khi login.
+
+---
+
+## Deep Reading Notes (Q14)
+
+- Hot path: gateway → build key (api_key/user/ip + route + tier) → Redis Lua `EVAL` → allow/deny + headers.
+- Invariants:
+    - Atomicity: counter/window update phải atomic (Lua/txn), không race.
+    - Keying/fairness: đúng “subject” và “scope” (global vs per-route) để không phạt nhầm.
+    - Time correctness: window math nhất quán (client time vs Redis `TIME`).
+    - Degradation policy: fail-open vs fail-closed theo risk của endpoint.
+- Trade-offs:
+    - Token Bucket vs Sliding Window Counter: burst control vs simplicity/cost.
+    - Per-region limit vs global strict limit: latency vs consistency.
+    - Central Redis vs local in-process + sync: accuracy vs availability.
+- Failure drills:
+    - Redis p99 tăng/timeout: circuit breaker, local fallback, hoặc bypass có kiểm soát.
+    - Hot key (1 api_key bị abuse): shard strategy, per-route cap, “shadow ban”/progressive penalties.
+    - Retry storm (client retries on 429/5xx): headers + backoff + jitter, protect Redis.
+
+## 🔬 Phase 4: Deep Dive - Algorithms
+
+### 4.0 API Contract & RateLimit Headers (production-grade)
+
+**Request**: mọi request đi qua gateway đều được gắn identity (ưu tiên api_key/user/ip) và route.
+
+**Response headers** (gợi ý theo RFC-like conventions, đủ để client backoff đúng):
+
+```http
+X-RateLimit-Limit: 100
+X-RateLimit-Remaining: 0
+X-RateLimit-Reset: 1640000000
+Retry-After: 30
+```
+
+Notes:
+- `Reset` nên là epoch seconds của thời điểm “cửa sổ” reset (hoặc earliest retry time), để client tính backoff.
+- Với Token Bucket, `Retry-After` có thể là thời gian tới khi có 1 token mới (ceil).
+
+### 4.0 Data Model (Redis) theo từng thuật toán
+
+| Algorithm | Redis type | Key example | Stored fields |
+|----------|------------|-------------|---------------|
+| Token Bucket | HASH | `rl:user:123:/v1/payments:tb` | `tokens`, `last_refill_ms` |
+| Sliding Window Log | ZSET | `rl:user:123:/v1/search:swl` | members = request_id, score = timestamp_ms |
+| Sliding Window Counter | HASH | `rl:user:123:/v1/search:swc` | bucket fields = `bucket_id` → count |
+
+**Key rule**: luôn set TTL để key tự GC khi user không active.
+
+### 4.0 Config Model (DB) + Cache Strategy
+
+Điểm “giống Q12”: limiter cũng cần **source of truth** cho rules (tier/route/limits) và phải cache để không làm chậm hot path.
+
+```sql
+-- Rate limit rules (source of truth)
+CREATE TABLE rate_limit_rules (
+    id BIGSERIAL PRIMARY KEY,
+    scope VARCHAR(32) NOT NULL,           -- global / per_route / per_method
+    subject_type VARCHAR(16) NOT NULL,    -- api_key / user / ip
+    route_pattern VARCHAR(255) NOT NULL,  -- e.g. /v1/payments/*
+    tier VARCHAR(32) NOT NULL,            -- free / premium / internal
+    algorithm VARCHAR(16) NOT NULL,       -- tb / swc / swl
+    limit_value INT NOT NULL,             -- e.g. 100
+    window_ms INT NOT NULL,               -- e.g. 60000 (for window algos)
+    burst INT,                            -- for token bucket capacity
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_rl_lookup ON rate_limit_rules (subject_type, tier, route_pattern);
+```
+
+Serving pattern:
+- Gateway loads rules into local cache (e.g., 30–60s TTL) + watches updates (pub/sub) để giảm cache staleness.
+- Nếu cache miss: fallback to a safe default rule (thường stricter cho public endpoints).
+
+### 4.1 Token Bucket
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    TOKEN BUCKET                             │
+│                                                             │
+│  Tokens added:     ●●●●●                                   │
+│  at fixed rate     ↓↓↓↓↓                                   │
+│                 ┌─────────────┐                            │
+│                 │ ● ● ● ● ●  │  Bucket capacity: 10       │
+│                 │   Bucket    │                            │
+│                 └──────┬──────┘                            │
+│                        │                                    │
+│                        ▼                                    │
+│  Request comes  ──▶ Take 1 token                           │
+│                                                             │
+│  If bucket empty → REJECT                                  │
+│  If has token → ALLOW and remove token                     │
+└─────────────────────────────────────────────────────────────┘
+
+Pros: Allows bursts up to bucket size
+Cons: Need to track tokens + last_refill_time
+```
+
+```python
+class TokenBucket:
+    """
+    Redis-based distributed token bucket.
+    
+    Dùng Lua script để atomic operation.
+    """
+    
+    LUA_SCRIPT = """
+    local key = KEYS[1]
+    local capacity = tonumber(ARGV[1])
+    local refill_rate = tonumber(ARGV[2])
+    local now = tonumber(ARGV[3])
+    
+    local bucket = redis.call('HMGET', key, 'tokens', 'last_refill')
+    local tokens = tonumber(bucket[1]) or capacity
+    local last_refill = tonumber(bucket[2]) or now
+    
+    -- Refill tokens
+    local elapsed = now - last_refill
+    tokens = math.min(capacity, tokens + elapsed * refill_rate)
+    
+    -- Try to consume
+    if tokens >= 1 then
+        tokens = tokens - 1
+        redis.call('HMSET', key, 'tokens', tokens, 'last_refill', now)
+        redis.call('EXPIRE', key, 3600)
+        return 1  -- Allowed
+    else
+        return 0  -- Rejected
+    end
+    """
+    
+    def allow_request(self, user_id):
+        now = time.time()
+        result = redis.eval(
+            self.LUA_SCRIPT,
+            1,  # Number of keys
+            f"ratelimit:{user_id}",  # Key
+            10,  # Capacity
+            1,   # Refill rate (tokens/sec)
+            now
+        )
+        return result == 1
+```
+
+### Token Bucket (Production notes)
+
+- **Atomic**: Luôn dùng Lua (hoặc Redis transaction) để tránh race conditions.
+- **TTL**: Key không dùng nữa phải tự hết hạn để tiết kiệm memory.
+- **Clock**: Nếu lo time drift, có thể dùng Redis `TIME` trong Lua thay vì client time.
+
+---
+
+### 4.2 Sliding Window Log (accurate nhưng đắt)
+
+**Idea**: Lưu timestamp từng request vào `ZSET`, xoá phần quá hạn, rồi đếm.
+
+Pros: chính xác cao  
+Cons: nhiều write + memory cao khi limit lớn
 
 ```python
 class SlidingWindowLog:
-    def __init__(self, redis_client, max_requests, window_seconds):
-        self.redis = redis_client
-        self.max_requests = max_requests
-        self.window_seconds = window_seconds
-    
-    def allow_request(self, key):
-        now = time.time()
-        window_start = now - self.window_seconds
-        
-        # Remove old entries
-        self.redis.zremrangebyscore(key, 0, window_start)
-        
-        # Count requests in current window
-        request_count = self.redis.zcard(key)
-        
-        if request_count < self.max_requests:
-            # Add current request
-            self.redis.zadd(key, {str(now): now})
-            self.redis.expire(key, self.window_seconds)
-            return True
-        
-        return False
+    """Accurate sliding window using Redis ZSET + Lua."""
+
+    LUA = """
+        local key = KEYS[1]
+        local now_ms = tonumber(ARGV[1])
+        local window_ms = tonumber(ARGV[2])
+        local limit = tonumber(ARGV[3])
+        local member = ARGV[4]
+
+        redis.call('ZREMRANGEBYSCORE', key, 0, now_ms - window_ms)
+        redis.call('ZADD', key, now_ms, member)
+
+        local count = redis.call('ZCARD', key)
+        redis.call('PEXPIRE', key, window_ms + 1000)
+
+        if count <= limit then
+            return {1, count}
+        else
+            return {0, count}
+        end
+    """
+
+    def __init__(self, redis, limit: int, window_ms: int):
+        self.redis = redis
+        self.limit = limit
+        self.window_ms = window_ms
+
+    def allow(self, key: str, request_id: str, now_ms: int):
+        allowed, count = self.redis.eval(
+            self.LUA,
+            1,
+            key,
+            now_ms,
+            self.window_ms,
+            self.limit,
+            request_id,
+        )
+        return allowed == 1, int(count)
 ```
 
-**3. Sliding Window Counter**
+---
+
+### 4.3 Sliding Window Counter (recommended default)
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                SLIDING WINDOW COUNTER                       │
+│                                                             │
+│  Time:     |-------|-------|-------|-------|              │
+│            1:00    1:01    1:02    1:03                    │
+│                                                             │
+│  Counts:      15      20      18      12                   │
+│                                                             │
+│  At 1:02:30, limit = 50 requests/min                       │
+│                                                             │
+│  Current window: 0.5 × 20 (prev) + 0.5 × 18 (current)     │
+│                = 10 + 9 = 19                               │
+│                                                             │
+│  Space left: 50 - 19 = 31 requests                        │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Idea**: Chia thời gian thành 2 buckets (current + previous), rồi nội suy.
+
+Ưu điểm:
+- O(1) memory per key
+- Ít write hơn log
+- Mượt hơn Fixed Window
 
 ```python
 class SlidingWindowCounter:
-    def __init__(self, redis_client, max_requests, window_seconds):
-        self.redis = redis_client
-        self.max_requests = max_requests
-        self.window_seconds = window_seconds
-    
-    def allow_request(self, key):
-        now = time.time()
-        current_window = int(now // self.window_seconds)
-        previous_window = current_window - 1
-        
-        # Keys for current and previous windows
-        current_key = f"{key}:{current_window}"
-        previous_key = f"{key}:{previous_window}"
-        
-        # Get counts
-        current_count = int(self.redis.get(current_key) or 0)
-        previous_count = int(self.redis.get(previous_key) or 0)
-        
-        # Calculate weight for previous window
-        elapsed_time = now - (current_window * self.window_seconds)
-        weight = 1 - (elapsed_time / self.window_seconds)
-        
-        # Weighted count
-        estimated_count = current_count + (previous_count * weight)
-        
-        if estimated_count < self.max_requests:
-            # Increment current window
-            pipe = self.redis.pipeline()
-            pipe.incr(current_key)
-            pipe.expire(current_key, self.window_seconds * 2)
-            pipe.execute()
-            return True
-        
-        return False
-```
+    """Two-bucket sliding window counter via Redis hash + Lua."""
 
-**4. Fixed Window Counter**
+    LUA = """
+        local key = KEYS[1]
+        local now_ms = tonumber(ARGV[1])
+        local window_ms = tonumber(ARGV[2])
+        local limit = tonumber(ARGV[3])
 
-```python
-class FixedWindowCounter:
-    def __init__(self, redis_client, max_requests, window_seconds):
-        self.redis = redis_client
-        self.max_requests = max_requests
-        self.window_seconds = window_seconds
-    
-    def allow_request(self, key):
-        now = int(time.time())
-        window = now // self.window_seconds
-        window_key = f"{key}:{window}"
-        
-        # Increment counter
-        count = self.redis.incr(window_key)
-        
-        if count == 1:
-            # Set expiration on first request
-            self.redis.expire(window_key, self.window_seconds)
-        
-        return count <= self.max_requests
-```
+        local current_bucket = math.floor(now_ms / window_ms)
+        local prev_bucket = current_bucket - 1
 
-**5. Rate Limiter Middleware**
+        local curr_field = tostring(current_bucket)
+        local prev_field = tostring(prev_bucket)
 
-```python
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse
+        local curr = redis.call('HINCRBY', key, curr_field, 1)
+        local prev = tonumber(redis.call('HGET', key, prev_field)) or 0
 
-app = FastAPI()
+        local bucket_start_ms = current_bucket * window_ms
+        local elapsed_ms = now_ms - bucket_start_ms
+        local prev_weight = (window_ms - elapsed_ms) / window_ms
 
-# Configure rate limits
-RATE_LIMITS = {
-    'default': {'requests': 1000, 'window': 60},  # 1000 req/min
-    'premium': {'requests': 10000, 'window': 60},  # 10000 req/min
-    'internal': {'requests': float('inf'), 'window': 60}  # No limit
-}
+        local approx = prev * prev_weight + curr
 
-@app.middleware("http")
-async def rate_limit_middleware(request: Request, call_next):
-    # Get user tier
-    user_id = request.headers.get('X-User-Id')
-    user_tier = get_user_tier(user_id) or 'default'
-    
-    # Get rate limit config
-    config = RATE_LIMITS.get(user_tier, RATE_LIMITS['default'])
-    
-    # Check rate limit
-    rate_limiter = SlidingWindowCounter(
-        redis_client,
-        config['requests'],
-        config['window']
-    )
-    
-    key = f"rate_limit:{user_tier}:{user_id or request.client.host}"
-    
-    if not rate_limiter.allow_request(key):
-        return JSONResponse(
-            status_code=429,
-            content={
-                "error": "Rate limit exceeded",
-                "retry_after": config['window']
-            },
-            headers={
-                "X-RateLimit-Limit": str(config['requests']),
-                "X-RateLimit-Remaining": "0",
-                "Retry-After": str(config['window'])
-            }
+        redis.call('PEXPIRE', key, window_ms * 2)
+
+        if approx <= limit then
+            return {1, approx}
+        else
+            return {0, approx}
+        end
+    """
+
+    def __init__(self, redis, limit: int, window_ms: int):
+        self.redis = redis
+        self.limit = limit
+        self.window_ms = window_ms
+
+    def allow(self, key: str, now_ms: int):
+        allowed, approx = self.redis.eval(
+            self.LUA,
+            1,
+            key,
+            now_ms,
+            self.window_ms,
+            self.limit,
         )
-    
-    # Get remaining requests
-    remaining = get_remaining_requests(key, config)
-    
-    response = await call_next(request)
-    
-    # Add rate limit headers
-    response.headers["X-RateLimit-Limit"] = str(config['requests'])
-    response.headers["X-RateLimit-Remaining"] = str(remaining)
-    response.headers["X-RateLimit-Reset"] = str(int(time.time()) + config['window'])
-    
-    return response
+        return allowed == 1, float(approx)
 ```
 
-**6. Distributed Rate Limiting**
+### Algorithm Comparison
 
-```python
-class DistributedRateLimiter:
-    def __init__(self, redis_cluster):
-        self.redis = redis_cluster
-    
-    def allow_request(self, key, limit, window):
-        # Use Redis Cluster for distributed rate limiting
-        # Each node handles its shard of keys
-        
-        # Global rate limiting across all regions
-        global_key = f"global:{key}"
-        local_key = f"local:{get_region()}:{key}"
-        
-        # Check local first (faster)
-        local_allowed = self.check_local_limit(local_key, limit * 0.7, window)
-        
-        if not local_allowed:
-            return False
-        
-        # Check global (cross-region)
-        global_allowed = self.check_global_limit(global_key, limit, window)
-        
-        return global_allowed
-    
-    def check_local_limit(self, key, limit, window):
-        # Fast local check
-        counter = FixedWindowCounter(self.redis, limit, window)
-        return counter.allow_request(key)
-    
-    def check_global_limit(self, key, limit, window):
-        # Slower global check with eventual consistency
-        counter = SlidingWindowCounter(self.redis, limit, window)
-        return counter.allow_request(key)
+| Algorithm | Memory | Accuracy | Burst | Use Case |
+|-----------|--------|----------|-------|----------|
+| **Token Bucket** | Low | High | Allows controlled burst | API limits |
+| **Leaky Bucket** | Low | High | Smooth rate | Traffic shaping |
+| **Fixed Window** | Very Low | Low | Boundary problem | Simple limits |
+| **Sliding Window** | Medium | High | Smooth | Precise limits |
+
+---
+
+## 📈 Phase 5: Scaling, Bottlenecks, Multi-Region
+
+### Bottlenecks & fixes
+
+| Bottleneck | Symptom | Fix |
+|------------|---------|-----|
+| Redis hotspot | p99 tăng | Redis Cluster sharding + local limiter (L1) |
+| Hot key (1 API key abused) | One shard overloaded | Add secondary shard key + global aggregation |
+| Retry storm | 429 spike + write spike | `Retry-After`, backoff + jitter |
+| Cross-region latency | limiter adds 20-80ms | State per-region, global enforcement async |
+
+### Multi-region strategy (pragmatic)
+
+**Option A (simple)**: Per-region limit only
+- Pro: fastest, simplest
+- Con: attacker có thể “chia tải” qua nhiều regions
+
+**Option B (hybrid)**: Local hard limit + global soft limit
+- Local: enforce strict per-key limit (low latency)
+- Global: stream events (Kafka) → detect abuse keys → push “denylist/quota” về regions
+
+### Graceful degradation
+
+Nếu Redis timeout/down:
+- **Fail-open** cho low-risk endpoints (search, feed) để tránh outage
+- **Fail-closed** cho high-risk endpoints (login, payment, export) để tránh abuse
+
+> 💡 Interview tip: Nêu rõ endpoint nào fail-open vs fail-closed và lý do.
+
+---
+
+## 📊 Observability (điểm cộng lớn)
+
+Metrics nên có:
+- `ratelimit_allowed_total{scope,route,tier}`
+- `ratelimit_blocked_total{scope,route,tier}`
+- `ratelimit_redis_latency_ms` (p50/p95/p99)
+- `ratelimit_failopen_total` / `ratelimit_failclosed_total`
+
+Logs/Tracing:
+- Log key (anonymized/hash), route, tier, decision, remaining, reset
+- Trace span: `rate_limit_check`
+
+---
+
+## 💡 Phase 6: Interview Tips
+
+### HTTP Response cho Rate Limited
+
+```http
+HTTP/1.1 429 Too Many Requests
+Retry-After: 30
+X-RateLimit-Limit: 100
+X-RateLimit-Remaining: 0
+X-RateLimit-Reset: 1640000000
+
+{
+  "error": "rate_limit_exceeded",
+  "message": "You have exceeded the limit of 100 requests per minute",
+  "retry_after": 30
+}
 ```
 
-**7. Rate Limiting by IP, User, and API Key**
+### Common Questions
 
-```python
-def get_rate_limit_key(request):
-    # Priority order
-    api_key = request.headers.get('X-API-Key')
-    if api_key:
-        return f"api_key:{api_key}"
-    
-    user_id = request.headers.get('X-User-Id')
-    if user_id:
-        return f"user:{user_id}"
-    
-    # Fall back to IP
-    ip = request.client.host
-    return f"ip:{ip}"
+1. **"Rate limit by what? User? IP? API key?"**
+   - API key cho B2B
+   - User ID cho authenticated
+   - IP cho anonymous + fallback
 
-def get_rate_limit_config(key):
-    if key.startswith('api_key:'):
-        # Check API key tier from database
-        api_key = key.split(':', 1)[1]
-        tier = get_api_key_tier(api_key)
-        return API_KEY_LIMITS[tier]
-    
-    if key.startswith('user:'):
-        user_id = key.split(':', 1)[1]
-        tier = get_user_tier(user_id)
-        return USER_LIMITS[tier]
-    
-    # IP-based (most restrictive)
-    return IP_LIMITS['default']
+2. **"Distributed rate limiting?"**
+   - Centralized Redis (most common)
+   - Local + sync (lower latency, less accurate)
+
+---
+
+# 15. Video Transcoding System
+
+> **Ví dụ thực tế**: YouTube, Netflix, NAVER TV  
+> **Thời gian phỏng vấn**: 45 phút
+
+## 🎯 Phase 1: Understand the Problem
+
+### Requirements
+- **FR1**: Upload video → transcode to multiple formats (1080p, 720p, 480p, 360p)
+- **FR2**: Generate HLS/DASH for adaptive streaming
+- **FR3**: Extract thumbnails
+- **NFR1**: Handle 1000 concurrent uploads
+- **NFR2**: Transcode within 2x real-time (1h video → 2h max)
+- **NFR3**: Cost effective (spot instances)
+
+### Clarifying Questions (để thiết kế đúng)
+
+| Câu hỏi | Vì sao quan trọng | Giả định |
+|--------|--------------------|----------|
+| Video length/file size distribution? | Quyết định multipart upload + queue time | Median 5 phút, p95 1 giờ |
+| Live streaming hay VOD? | Live cần latency/segment khác hẳn | VOD |
+| SLA processing? | HPA/worker sizing | 95% < 30 phút |
+| Có DRM/Watermark không? | Pipeline thêm bước, CPU/GPU | Optional |
+| Có cần virus scan/content moderation? | Bảo mật/tuân thủ | Có, async |
+
+---
+
+## 📊 Phase 2: Capacity Estimation (5 phút)
+
+Giả sử:
+- Upload: **1M videos/day**
+- Average size: **200MB/video**
+- Target profiles: **4 renditions** (1080/720/480/360) + HLS segments
+
+### Storage
+
+```
+Raw ingest/day = 1,000,000 × 200MB ≈ 200,000,000MB ≈ 200TB/day
+
+Processed multiplier (rough):
+- 4 renditions + audio + container overhead ≈ 1.2x–2.5x raw (tuỳ bitrate ladder)
+Assume 1.8x:
+Processed/day ≈ 360TB/day
+
+Total new storage/day ≈ 560TB/day
 ```
 
-**8. Graceful Degradation**
+### Network bandwidth (ingest)
 
-```python
-@app.middleware("http")
-async def adaptive_rate_limit(request: Request, call_next):
-    # Monitor system load
-    system_load = get_system_load()
-    
-    if system_load > 0.9:
-        # Under heavy load, reduce limits by 50%
-        scale_factor = 0.5
-    elif system_load > 0.7:
-        # Moderate load, reduce by 20%
-        scale_factor = 0.8
-    else:
-        # Normal operation
-        scale_factor = 1.0
-    
-    # Apply scaled rate limit
-    config = get_rate_limit_config(request)
-    adjusted_limit = int(config['requests'] * scale_factor)
-    
-    rate_limiter = TokenBucket(
-        redis_client,
-        capacity=adjusted_limit,
-        refill_rate=adjusted_limit / config['window']
-    )
-    
-    key = get_rate_limit_key(request)
-    
-    if not rate_limiter.allow_request(key):
-        return JSONResponse(status_code=429, content={"error": "Rate limit exceeded"})
-    
-    return await call_next(request)
+```
+200TB/day / 86,400s ≈ 2.3GB/s average ingest
+Peak factor 3x → ~7GB/s peak (CDN/edge ingest + multi-region helps)
 ```
 
-**9. Rate Limit Bypass for Critical Services**
+### Compute (very rough)
 
-```python
-WHITELISTED_IPS = ['10.0.0.0/8', '172.16.0.0/12']
-CRITICAL_ENDPOINTS = ['/health', '/metrics', '/webhook']
+```
+If 1h video takes 2h CPU time (2x real-time) for 1080p,
+and lower renditions are cheaper, assume total ~3x realtime CPU per video.
 
-def should_bypass_rate_limit(request):
-    # Check if IP is whitelisted
-    client_ip = request.client.host
-    for cidr in WHITELISTED_IPS:
-        if ip_address_in_network(client_ip, cidr):
-            return True
-    
-    # Check if endpoint is critical
-    if request.url.path in CRITICAL_ENDPOINTS:
-        return True
-    
-    # Check for admin role
-    user_role = get_user_role(request)
-    if user_role == 'admin':
-        return True
-    
-    return False
+1M videos/day × 5min average = 5M minutes video/day
+CPU minutes/day ≈ 15M CPU-min/day
+≈ 250K CPU-hours/day
 ```
 
-**10. Monitoring & Alerts**
+> 💡 Kết luận thiết kế: đây là **batch/async system** với điểm nghẽn là compute + egress, nên cần queue, autoscaling workers, checkpoint/retry, và tối ưu chi phí.
 
-```python
-import prometheus_client
+---
 
-rate_limit_requests = prometheus_client.Counter(
-    'rate_limit_requests_total',
-    'Total requests processed by rate limiter',
-    ['status', 'tier']
-)
+## 🏗️ Phase 3: High-Level Design
 
-rate_limit_exceeded = prometheus_client.Counter(
-    'rate_limit_exceeded_total',
-    'Total requests that exceeded rate limit',
-    ['tier']
-)
-
-def monitor_rate_limit(key, allowed, tier):
-    status = 'allowed' if allowed else 'blocked'
-    rate_limit_requests.labels(status=status, tier=tier).inc()
-    
-    if not allowed:
-        rate_limit_exceeded.labels(tier=tier).inc()
-        
-        # Alert if too many blocked requests
-        if rate_limit_exceeded.labels(tier=tier)._value.get() > 1000:
-            send_alert(f"High rate limit violations for tier {tier}")
+```
+┌───────────────────────────────────────────────────────────────────────┐
+│                         VIDEO TRANSCODING PIPELINE                     │
+│                                                                        │
+│  ┌────────┐    ┌────────────┐    ┌───────────┐    ┌──────────────┐   │
+│  │ User   │───▶│  Upload    │───▶│    S3     │───▶│ Transcoding  │   │
+│  │        │    │  Service   │    │  (Raw)    │    │   Queue      │   │
+│  └────────┘    └────────────┘    └───────────┘    └──────┬───────┘   │
+│                                                          │            │
+│                                                          ▼            │
+│  ┌───────────────────────────────────────────────────────────────┐   │
+│  │                  WORKER POOL (Auto-scaling)                    │   │
+│  │   ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐          │   │
+│  │   │Worker 1 │  │Worker 2 │  │Worker 3 │  │Worker N │          │   │
+│  │   │(FFmpeg) │  │(FFmpeg) │  │(FFmpeg) │  │(FFmpeg) │          │   │
+│  │   └────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘          │   │
+│  │        │            │            │            │                 │   │
+│  │        └────────────┴────────────┴────────────┘                 │   │
+│  └───────────────────────────────────────────────────────────────┘   │
+│                                   │                                   │
+│                                   ▼                                   │
+│  ┌───────────┐    ┌────────────────┐    ┌───────────┐               │
+│  │    S3     │◀───│  Notification  │───▶│   CDN     │               │
+│  │(Processed)│    │    Service     │    │(Delivery) │               │
+│  └───────────┘    └────────────────┘    └───────────┘               │
+└───────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 15. Design a Video Transcoding System
+## Deep Reading Notes (Q15)
 
-### Requirements
-- 1 triệu videos/ngày
-- Multiple formats/resolutions
-- Adaptive streaming (HLS/DASH)
-- Cost-efficient storage
+- Hot path (upload): client multipart upload → store raw object → enqueue job → ACK user (async).
+- Hot path (processing): worker claim job → download raw → transcode renditions + segments → upload processed → emit completion event.
+- Invariants:
+    - Idempotency: at-least-once queue ⇒ job must be safe to retry (key = `video_id + profile + step`).
+    - Progress/state machine: each step transitions once; avoid double-publish/duplicate outputs.
+    - Isolation: one “poison” video shouldn’t block the whole queue (timeouts + DLQ).
+- Trade-offs:
+    - Single worker per video vs per-rendition parallelism: throughput vs complexity + egress.
+    - CPU-only vs GPU: cost vs speed; pick per profile/volume.
+    - Spot instances vs on-demand: cost vs interruptions (checkpoint + retry).
+- Failure drills:
+    - Worker killed mid-transcode: resume strategy (recompute vs checkpoint), cleanup partial outputs.
+    - Queue backlog spikes: autoscale by queue age/depth; apply admission control.
+    - S3 throttling/egress bottleneck: rate-limit workers, regionalize storage, batch uploads.
 
-### High-Level Architecture
+## 🔬 Phase 4: Deep Dive
 
+### 4.0 Job Model, State Machine, Idempotency (điểm làm bài “sâu”)
+
+Trong production, queue là **at-least-once**, nên bạn phải chứng minh “retry không tạo output rác/duplicate”.
+
+**State machine** (simplified):
+
+`UPLOADED` → `QUEUED` → `PROCESSING` → (`SUCCEEDED` | `FAILED` | `CANCELLED`)
+
+Mỗi video có nhiều tasks con: `(profile, step)` như `transcode`, `segment`, `thumbnail`.
+
+```sql
+-- Job table: 1 row per uploaded video
+CREATE TABLE video_jobs (
+    job_id UUID PRIMARY KEY,
+    video_id UUID NOT NULL,
+    uploader_id BIGINT,
+    raw_object_key TEXT NOT NULL,
+    status VARCHAR(16) NOT NULL,          -- UPLOADED/QUEUED/PROCESSING/SUCCEEDED/FAILED
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- Task table: idempotency boundary (unique per video/profile/step)
+CREATE TABLE video_tasks (
+    task_id UUID PRIMARY KEY,
+    video_id UUID NOT NULL,
+    profile VARCHAR(16) NOT NULL,         -- 1080p/720p/...
+    step VARCHAR(16) NOT NULL,            -- transcode/segment/thumbnail
+    status VARCHAR(16) NOT NULL,          -- PENDING/RUNNING/SUCCEEDED/FAILED
+    attempt INT NOT NULL DEFAULT 0,
+    output_prefix TEXT,
+    error_code TEXT,
+    error_message TEXT,
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_video_task UNIQUE (video_id, profile, step)
+);
+
+CREATE INDEX idx_tasks_status ON video_tasks (status);
 ```
-[User Upload]
-      ↓
-[Upload Service] → [S3 Raw Storage]
-      ↓
-[Message Queue (SQS/RabbitMQ)]
-      ↓
-[Transcoding Workers (Auto-scaling)]
-      ↓
-[FFmpeg Processing]
-      ↓
-[S3 Processed Storage] → [CDN]
+
+**Message schema** (queue):
+
+```json
+{
+    "video_id": "...",
+    "profile": "720p",
+    "step": "transcode",
+    "raw_object_key": "raw/2025/12/..../source.mp4",
+    "attempt": 3,
+    "idempotency_key": "{video_id}:{profile}:{step}"
+}
 ```
 
-### Core Components
+**Storage layout** (debuggable + supports cleanup):
 
-**1. Upload Service**
+- `raw/{video_id}/source.mp4`
+- `processed/{video_id}/{profile}/index.m3u8`
+- `processed/{video_id}/{profile}/seg-00001.ts`
+- `thumbnails/{video_id}/thumb-0001.jpg`
+
+### 4.1 FFmpeg Transcoding
 
 ```python
-from fastapi import FastAPI, UploadFile, File
-import boto3
-import uuid
-
-app = FastAPI()
-s3_client = boto3.client('s3')
-sqs_client = boto3.client('sqs')
-
-@app.post("/api/v1/videos/upload")
-async def upload_video(file: UploadFile = File(...), user_id: str = None):
-    # Generate unique video ID
-    video_id = str(uuid.uuid4())
-    
-    # Upload to S3
-    s3_key = f"raw/{video_id}/{file.filename}"
-    
-    # Use multipart upload for large files
-    s3_client.upload_fileobj(
-        file.file,
-        'video-raw-bucket',
-        s3_key,
-        ExtraArgs={
-            'ContentType': file.content_type,
-            'Metadata': {
-                'user_id': user_id,
-                'original_filename': file.filename
-            }
-        }
-    )
-    
-    # Get video metadata
-    metadata = await extract_metadata(s3_key)
-    
-    # Create transcoding job
-    job = {
-        'video_id': video_id,
-        's3_key': s3_key,
-        'user_id': user_id,
-        'metadata': metadata,
-        'profiles': ['1080p', '720p', '480p', '360p'],
-        'priority': 'normal'
-    }
-    
-    # Send to queue
-    sqs_client.send_message(
-        QueueUrl='transcoding-queue',
-        MessageBody=json.dumps(job),
-        MessageAttributes={
-            'Priority': {'StringValue': 'normal', 'DataType': 'String'}
-        }
-    )
-    
-    return {
-        'video_id': video_id,
-        'status': 'processing',
-        'estimated_time': estimate_processing_time(metadata)
-    }
-
-async def extract_metadata(s3_key):
-    # Download file temporarily
-    local_path = f"/tmp/{uuid.uuid4()}"
-    s3_client.download_file('video-raw-bucket', s3_key, local_path)
-    
-    # Use ffprobe to get metadata
-    result = subprocess.run([
-        'ffprobe',
-        '-v', 'quiet',
-        '-print_format', 'json',
-        '-show_format',
-        '-show_streams',
-        local_path
-    ], capture_output=True, text=True)
-    
-    metadata = json.loads(result.stdout)
-    
-    # Clean up
-    os.remove(local_path)
-    
-    return {
-        'duration': float(metadata['format']['duration']),
-        'size': int(metadata['format']['size']),
-        'bitrate': int(metadata['format']['bit_rate']),
-        'video_codec': metadata['streams'][0]['codec_name'],
-        'audio_codec': metadata['streams'][1]['codec_name'],
-        'width': metadata['streams'][0]['width'],
-        'height': metadata['streams'][0]['height'],
-        'fps': eval(metadata['streams'][0]['r_frame_rate'])
-    }
-```
-
-**2. Transcoding Worker**
-
-```python
-import ffmpeg
-import concurrent.futures
-
 class TranscodingWorker:
-    def __init__(self):
-        self.profiles = {
-            '1080p': {'width': 1920, 'height': 1080, 'bitrate': '5000k', 'audio_bitrate': '192k'},
-            '720p': {'width': 1280, 'height': 720, 'bitrate': '2800k', 'audio_bitrate': '128k'},
-            '480p': {'width': 854, 'height': 480, 'bitrate': '1400k', 'audio_bitrate': '128k'},
-            '360p': {'width': 640, 'height': 360, 'bitrate': '800k', 'audio_bitrate': '96k'},
-            '240p': {'width': 426, 'height': 240, 'bitrate': '400k', 'audio_bitrate': '64k'}
-        }
+    """
+    Worker polls SQS, downloads video, transcodes, uploads.
     
-    def process_job(self, job):
-        video_id = job['video_id']
-        s3_key = job['s3_key']
+    Tại sao parallel transcoding?
+    → CPU-bound task, 1 video có thể dùng hết 1 core
+    → Transcode nhiều resolutions parallel = faster
+    """
+    
+    PROFILES = {
+        '1080p': {'resolution': '1920x1080', 'bitrate': '5000k'},
+        '720p':  {'resolution': '1280x720',  'bitrate': '2800k'},
+        '480p':  {'resolution': '854x480',   'bitrate': '1400k'},
+        '360p':  {'resolution': '640x360',   'bitrate': '800k'},
+    }
+    
+    def process(self, job):
+        # 1. Download from S3
+        input_path = download_from_s3(job.s3_key)
         
-        # Download from S3
-        input_path = f"/tmp/{video_id}_input.mp4"
-        s3_client.download_file('video-raw-bucket', s3_key, input_path)
-        
-        # Transcode to multiple profiles in parallel
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        # 2. Parallel transcode to all profiles
+        with ThreadPoolExecutor(max_workers=4) as executor:
             futures = []
-            
-            for profile_name in job['profiles']:
+            for profile_name, settings in self.PROFILES.items():
                 future = executor.submit(
                     self.transcode_profile,
-                    input_path,
-                    video_id,
-                    profile_name
+                    input_path, 
+                    profile_name,
+                    settings
                 )
                 futures.append(future)
             
-            # Wait for all to complete
+            # Wait all complete
             results = [f.result() for f in futures]
         
-        # Generate HLS master playlist
-        master_playlist = self.generate_master_playlist(video_id, results)
+        # 3. Generate HLS master playlist
+        master_playlist = self.generate_hls_manifest(results)
         
-        # Upload master playlist
-        s3_client.put_object(
-            Bucket='video-processed-bucket',
-            Key=f"{video_id}/master.m3u8",
-            Body=master_playlist,
-            ContentType='application/vnd.apple.mpegurl'
-        )
+        # 4. Upload to processed bucket
+        upload_to_s3(results, master_playlist)
         
-        # Clean up
-        os.remove(input_path)
-        
-        # Update database
-        update_video_status(video_id, 'completed', results)
-        
-        return video_id
-    
-    def transcode_profile(self, input_path, video_id, profile_name):
-        profile = self.profiles[profile_name]
-        output_dir = f"/tmp/{video_id}/{profile_name}"
-        os.makedirs(output_dir, exist_ok=True)
-        
-        output_path = f"{output_dir}/index.m3u8"
-        
-        # FFmpeg command for HLS
-        stream = ffmpeg.input(input_path)
-        
-        # Video processing
-        video = stream.video.filter('scale', profile['width'], profile['height'])
-        
-        # Audio processing
-        audio = stream.audio
-        
-        # Output to HLS
-        output = ffmpeg.output(
-            video, audio,
-            output_path,
-            format='hls',
-            vcodec='libx264',
-            video_bitrate=profile['bitrate'],
-            acodec='aac',
-            audio_bitrate=profile['audio_bitrate'],
-            hls_time=6,  # 6-second segments
-            hls_list_size=0,  # Keep all segments in playlist
-            hls_segment_filename=f"{output_dir}/segment_%03d.ts",
-            preset='medium',  # Encoding speed vs quality
-            crf=23  # Quality (lower = better)
-        )
-        
-        # Run transcoding
-        ffmpeg.run(output, capture_stdout=True, capture_stderr=True)
-        
-        # Upload to S3
-        self.upload_to_s3(output_dir, video_id, profile_name)
-        
-        # Clean up
-        import shutil
-        shutil.rmtree(output_dir)
-        
-        return {
-            'profile': profile_name,
-            'path': f"{video_id}/{profile_name}/index.m3u8",
-            'resolution': f"{profile['width']}x{profile['height']}",
-            'bitrate': profile['bitrate']
-        }
-    
-    def upload_to_s3(self, directory, video_id, profile_name):
-        # Upload all files in directory
-        for filename in os.listdir(directory):
-            file_path = os.path.join(directory, filename)
-            s3_key = f"{video_id}/{profile_name}/{filename}"
-            
-            content_type = 'application/vnd.apple.mpegurl' if filename.endswith('.m3u8') else 'video/MP2T'
-            
-            s3_client.upload_file(
-                file_path,
-                'video-processed-bucket',
-                s3_key,
-                ExtraArgs={'ContentType': content_type}
-            )
-    
-    def generate_master_playlist(self, video_id, results):
-        playlist = "#EXTM3U\n#EXT-X-VERSION:3\n"
-        
-        for result in sorted(results, key=lambda x: int(x['bitrate'].rstrip('k')), reverse=True):
-            bitrate_kbps = int(result['bitrate'].rstrip('k'))
-            width, height = result['resolution'].split('x')
-            
-            playlist += f"#EXT-X-STREAM-INF:BANDWIDTH={bitrate_kbps * 1000},RESOLUTION={width}x{height}\n"
-            playlist += f"{result['profile']}/index.m3u8\n"
-        
-        return playlist
+        # 5. Notify completion
+        notify_video_ready(job.video_id)
 ```
 
-**3. Priority Queue Management**
+### 4.2 HLS Adaptive Streaming
 
-```python
-class PriorityQueue:
-    def __init__(self):
-        self.queues = {
-            'high': [],
-            'normal': [],
-            'low': []
-        }
-    
-    def enqueue(self, job, priority='normal'):
-        self.queues[priority].append(job)
-    
-    def dequeue(self):
-        # Process high priority first
-        for priority in ['high', 'normal', 'low']:
-            if self.queues[priority]:
-                return self.queues[priority].pop(0)
-        return None
-    
-    def get_queue_sizes(self):
-        return {p: len(q) for p, q in self.queues.items()}
+```
+Master Playlist (master.m3u8):
+#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
+1080p/index.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=2800000,RESOLUTION=1280x720
+720p/index.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=1400000,RESOLUTION=854x480
+480p/index.m3u8
 
-# Set priority based on user tier or video importance
-def determine_priority(user_id, video_metadata):
-    user_tier = get_user_tier(user_id)
-    
-    if user_tier == 'premium':
-        return 'high'
-    elif video_metadata['duration'] < 60:  # Short videos
-        return 'high'
-    else:
-        return 'normal'
+Player behavior:
+1. Start với quality trung bình
+2. Đo bandwidth thực tế
+3. Tự động switch quality dựa trên network
 ```
 
-**4. Auto-scaling Workers**
+### 4.3 Cost Optimization
 
-```python
-# Kubernetes HPA (Horizontal Pod Autoscaler) configuration
-"""
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: transcoding-worker-hpa
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: transcoding-worker
-  minReplicas: 5
-  maxReplicas: 100
-  metrics:
-  - type: External
-    external:
-      metric:
-        name: sqs_queue_depth
-      target:
-        type: AverageValue
-        averageValue: "10"
-  behavior:
-    scaleUp:
-      stabilizationWindowSeconds: 60
-      policies:
-      - type: Percent
-        value: 50
-        periodSeconds: 60
-    scaleDown:
-      stabilizationWindowSeconds: 300
-      policies:
-      - type: Percent
-        value: 10
-        periodSeconds: 60
-"""
-
-# EC2 Spot Instances for cost optimization
-def request_spot_instances(count):
-    ec2_client = boto3.client('ec2')
-    
-    response = ec2_client.request_spot_instances(
-        InstanceCount=count,
-        Type='persistent',
-        LaunchSpecification={
-            'ImageId': 'ami-transcoding-worker',
-            'InstanceType': 'c5.4xlarge',  # Compute optimized
-            'KeyName': 'transcoding-key',
-            'UserData': get_worker_userdata(),
-            'IamInstanceProfile': {
-                'Name': 'transcoding-worker-role'
-            }
-        },
-        SpotPrice='0.20'  # Max price per hour
-    )
-    
-    return response
-```
-
-**5. Thumbnail Generation**
-
-```python
-def generate_thumbnails(video_path, video_id, count=5):
-    # Get video duration
-    duration = get_video_duration(video_path)
-    
-    # Generate thumbnails at intervals
-    thumbnails = []
-    for i in range(count):
-        timestamp = (duration / (count + 1)) * (i + 1)
-        
-        output_path = f"/tmp/{video_id}_thumb_{i}.jpg"
-        
-        # Extract frame at timestamp
-        stream = ffmpeg.input(video_path, ss=timestamp)
-        stream = ffmpeg.output(
-            stream,
-            output_path,
-            vframes=1,
-            format='image2',
-            vcodec='mjpeg',
-            **{'q:v': 2}  # Quality
-        )
-        ffmpeg.run(stream, quiet=True)
-        
-        # Upload to S3
-        s3_key = f"{video_id}/thumbnails/thumb_{i}.jpg"
-        s3_client.upload_file(
-            output_path,
-            'video-processed-bucket',
-            s3_key,
-            ExtraArgs={'ContentType': 'image/jpeg'}
-        )
-        
-        thumbnails.append(s3_key)
-        os.remove(output_path)
-    
-    return thumbnails
-```
-
-**6. Storage Tiering**
-
-```python
-# S3 Lifecycle Policy
-lifecycle_policy = {
-    "Rules": [
-        {
-            "Id": "MoveRawToGlacier",
-            "Status": "Enabled",
-            "Prefix": "raw/",
-            "Transitions": [
-                {
-                    "Days": 7,
-                    "StorageClass": "GLACIER"
-                }
-            ]
-        },
-        {
-            "Id": "MoveUnpopularToIA",
-            "Status": "Enabled",
-            "Prefix": "processed/",
-            "Transitions": [
-                {
-                    "Days": 30,
-                    "StorageClass": "STANDARD_IA"
-                },
-                {
-                    "Days": 90,
-                    "StorageClass": "GLACIER"
-                }
-            ]
-        },
-        {
-            "Id": "DeleteOldRaw",
-            "Status": "Enabled",
-            "Prefix": "raw/",
-            "Expiration": {
-                "Days": 365
-            }
-        }
-    ]
-}
-
-s3_client.put_bucket_lifecycle_configuration(
-    Bucket='video-storage',
-    LifecycleConfiguration=lifecycle_policy
-)
-```
-
-**7. Progress Tracking**
-
-```python
-class TranscodingProgress:
-    def __init__(self, video_id):
-        self.video_id = video_id
-        self.redis = redis.Redis()
-    
-    def update_progress(self, profile, percentage):
-        key = f"transcode_progress:{self.video_id}:{profile}"
-        self.redis.set(key, percentage, ex=3600)
-        
-        # Calculate overall progress
-        profiles = ['1080p', '720p', '480p', '360p']
-        total_progress = sum(
-            float(self.redis.get(f"transcode_progress:{self.video_id}:{p}") or 0)
-            for p in profiles
-        ) / len(profiles)
-        
-        self.redis.set(
-            f"transcode_progress:{self.video_id}",
-            total_progress,
-            ex=3600
-        )
-        
-        # Send websocket update to user
-        send_progress_update(self.video_id, total_progress)
-    
-    def get_progress(self):
-        return float(self.redis.get(f"transcode_progress:{self.video_id}") or 0)
-
-# Use with FFmpeg progress callback
-def transcode_with_progress(input_path, output_path, video_id, profile):
-    progress_tracker = TranscodingProgress(video_id)
-    
-    # FFmpeg with progress
-    process = (
-        ffmpeg
-        .input(input_path)
-        .output(output_path, **output_options)
-        .global_args('-progress', 'pipe:1')
-        .run_async(pipe_stdout=True, pipe_stderr=True)
-    )
-    
-    # Parse progress
-    for line in process.stdout:
-        if b'out_time_ms=' in line:
-            time_ms = int(line.decode().split('=')[1])
-            percentage = (time_ms / (duration * 1000)) * 100
-            progress_tracker.update_progress(profile, percentage)
-    
-    process.wait()
-```
-
-**8. Error Handling & Retry**
-
-```python
-import tenacity
-
-@tenacity.retry(
-    stop=tenacity.stop_after_attempt(3),
-    wait=tenacity.wait_exponential(multiplier=1, min=4, max=60),
-    retry=tenacity.retry_if_exception_type(TranscodingError)
-)
-def transcode_with_retry(job):
-    try:
-        return worker.process_job(job)
-    except ffmpeg.Error as e:
-        # Log error
-        log_transcoding_error(job['video_id'], str(e))
-        
-        # Determine if retriable
-        if 'Codec not found' in str(e):
-            # Not retriable
-            mark_job_failed(job['video_id'], 'unsupported_codec')
-            raise NonRetriableError(str(e))
-        else:
-            # Retriable
-            raise TranscodingError(str(e))
-```
-
-**9. CDN Integration**
-
-```python
-import boto3
-
-cloudfront = boto3.client('cloudfront')
-
-def create_cdn_distribution(video_id):
-    response = cloudfront.create_distribution(
-        DistributionConfig={
-            'CallerReference': str(uuid.uuid4()),
-            'Origins': {
-                'Quantity': 1,
-                'Items': [{
-                    'Id': 's3-origin',
-                    'DomainName': 'video-processed-bucket.s3.amazonaws.com',
-                    'S3OriginConfig': {
-                        'OriginAccessIdentity': ''
-                    }
-                }]
-            },
-            'DefaultCacheBehavior': {
-                'TargetOriginId': 's3-origin',
-                'ViewerProtocolPolicy': 'redirect-to-https',
-                'AllowedMethods': {
-                    'Quantity': 2,
-                    'Items': ['GET', 'HEAD']
-                },
-                'Compress': True,
-                'MinTTL': 86400  # 24 hours
-            },
-            'Enabled': True
-        }
-    )
-    
-    cdn_url = response['Distribution']['DomainName']
-    
-    return f"https://{cdn_url}/{video_id}/master.m3u8"
-```
-
-**10. Analytics & Monitoring**
-
-```python
-metrics = {
-    'transcoding_duration': Histogram('transcoding_duration_seconds'),
-    'transcoding_failures': Counter('transcoding_failures_total'),
-    'queue_depth': Gauge('transcoding_queue_depth'),
-    'worker_utilization': Gauge('worker_cpu_utilization_percent')
-}
-
-def monitor_transcoding(video_id, start_time, end_time, status):
-    duration = end_time - start_time
-    metrics['transcoding_duration'].observe(duration)
-    
-    if status == 'failed':
-        metrics['transcoding_failures'].inc()
-    
-    # Log to analytics
-    log_analytics({
-        'video_id': video_id,
-        'duration_seconds': duration,
-        'status': status,
-        'timestamp': datetime.now().isoformat()
-    })
-```
+| Strategy | Savings | Trade-off |
+|----------|---------|-----------|
+| **Spot Instances** | 70-90% | Có thể bị interrupt |
+| **Reserved capacity** | 30-60% | Commitment |
+| **ARM instances** | 20-40% | Compatibility |
 
 ---
 
-## 16. Design a Collaborative Editing System
+## 📈 Phase 5: Scaling, Reliability, Bottlenecks
 
-### Requirements
-- 100 triệu users
-- Up to 50 concurrent editors/document
-- Conflict resolution
-- Offline sync
-- Version history
+### Queue semantics (must say in interview)
 
-### High-Level Architecture
+- Queue/worker thường là **at-least-once** → worker phải **idempotent**.
+- Idempotency key gợi ý: `video_id + profile + step` (transcode/thumbnail/manifest).
+- Có **DLQ** cho job fail vĩnh viễn (corrupt file, unsupported codec).
 
-```
-[Clients (Web/Mobile)]
-      ↓
-[WebSocket Gateway]
-      ↓
-[Operational Transform / CRDT Engine]
-      ↓
-[Document State Service]
-      ↓
-[Document DB (MongoDB/Firestore)]
-      ↓
-[Version History (S3/DynamoDB)]
-```
+### Worker autoscaling
 
-### Core Components
+- Scale theo **queue depth** + **oldest message age**.
+- Tách worker pools theo loại việc:
+    - CPU-heavy: transcode
+    - I/O-heavy: download/upload
+    - lightweight: thumbnails/manifest
 
-**1. Operational Transformation (OT)**
+### Backpressure (ngăn hệ thống tự sập)
 
-```python
-class Operation:
-    def __init__(self, op_type, position, content, user_id):
-        self.type = op_type  # 'insert', 'delete', 'retain'
-        self.position = position
-        self.content = content
-        self.user_id = user_id
-        self.timestamp = time.time()
+- Nếu queue lag tăng: giảm concurrency per worker (tránh OOM) + tăng workers.
+- Nếu storage/egress bottleneck: throttling theo bucket/region.
 
-class OperationalTransform:
-    @staticmethod
-    def transform(op1, op2):
-        """
-        Transform two concurrent operations so they can be applied in any order
-        """
-        if op1.type == 'insert' and op2.type == 'insert':
-            if op1.position < op2.position:
-                return op1, Operation(op2.type, op2.position + len(op1.content), op2.content, op2.user_id)
-            elif op1.position > op2.position:
-                return Operation(op1.type, op1.position + len(op2.content), op1.content, op1.user_id), op2
-            else:
-                # Same position, use user_id as tiebreaker
-                if op1.user_id < op2.user_id:
-                    return op1, Operation(op2.type, op2.position + len(op1.content), op2.content, op2.user_id)
-                else:
-                    return Operation(op1.type, op1.position + len(op2.content), op1.content, op1.user_id), op2
-        
-        elif op1.type == 'insert' and op2.type == 'delete':
-            if op1.position <= op2.position:
-                return op1, Operation(op2.type, op2.position + len(op1.content), op2.content, op2.user_id)
-            elif op1.position > op2.position + len(op2.content):
-                return Operation(op1.type, op1.position - len(op2.content), op1.content, op1.user_id), op2
-            else:
-                # Insert position is within delete range
-                return op1, Operation(op2.type, op2.position, op2.content[:op1.position - op2.position] + op2.content[op1.position - op2.position:], op2.user_id)
-        
-        elif op1.type == 'delete' and op2.type == 'insert':
-            # Symmetric to above
-            op2_prime, op1_prime = OperationalTransform.transform(op2, op1)
-            return op1_prime, op2_prime
-        
-        elif op1.type == 'delete' and op2.type == 'delete':
-            if op1.position + len(op1.content) <= op2.position:
-                return op1, Operation(op2.type, op2.position - len(op1.content), op2.content, op2.user_id)
-            elif op2.position + len(op2.content) <= op1.position:
-                return Operation(op1.type, op1.position - len(op2.content), op1.content, op1.user_id), op2
-            else:
-                # Overlapping deletes
-                # Complex case: merge the deletes
-                start = min(op1.position, op2.position)
-                end = max(op1.position + len(op1.content), op2.position + len(op2.content))
-                merged_content = ''  # Content to delete
-                return Operation('delete', start, merged_content, op1.user_id), None
-        
-        return op1, op2
+### Hotspots
 
-class Document:
-    def __init__(self, doc_id):
-        self.doc_id = doc_id
-        self.content = ""
-        self.version = 0
-        self.pending_ops = []
-    
-    def apply_operation(self, operation):
-        if operation.type == 'insert':
-            self.content = (
-                self.content[:operation.position] +
-                operation.content +
-                self.content[operation.position:]
-            )
-        elif operation.type == 'delete':
-            self.content = (
-                self.content[:operation.position] +
-                self.content[operation.position + len(operation.content):]
-            )
-        
-        self.version += 1
-        
-        return self.content
-```
-
-**2. CRDT (Conflict-Free Replicated Data Type)**
-
-```python
-import uuid
-from typing import Dict, List, Tuple
-
-class LSeq:
-    """
-    CRDT for collaborative text editing
-    Uses Logoot-style positioning
-    """
-    def __init__(self, site_id):
-        self.site_id = site_id
-        self.sequence = []  # List of (position_id, character)
-        self.clock = 0
-    
-    def insert(self, index, char):
-        self.clock += 1
-        
-        # Generate position between previous and next
-        if index == 0:
-            prev_pos = None
-            next_pos = self.sequence[0][0] if self.sequence else None
-        elif index >= len(self.sequence):
-            prev_pos = self.sequence[-1][0] if self.sequence else None
-            next_pos = None
-        else:
-            prev_pos = self.sequence[index - 1][0]
-            next_pos = self.sequence[index][0]
-        
-        new_pos = self.generate_position(prev_pos, next_pos)
-        
-        # Insert into sequence
-        self.sequence.insert(index, (new_pos, char))
-        
-        return {
-            'type': 'insert',
-            'position': new_pos,
-            'char': char,
-            'site_id': self.site_id,
-            'clock': self.clock
-        }
-    
-    def delete(self, index):
-        self.clock += 1
-        
-        pos_id, char = self.sequence[index]
-        del self.sequence[index]
-        
-        return {
-            'type': 'delete',
-            'position': pos_id,
-            'site_id': self.site_id,
-            'clock': self.clock
-        }
-    
-    def apply_remote_operation(self, operation):
-        if operation['type'] == 'insert':
-            # Find insertion point
-            pos = operation['position']
-            index = self.find_index(pos)
-            self.sequence.insert(index, (pos, operation['char']))
-        
-        elif operation['type'] == 'delete':
-            # Find deletion point
-            pos = operation['position']
-            index = self.find_index(pos)
-            if index < len(self.sequence) and self.sequence[index][0] == pos:
-                del self.sequence[index]
-    
-    def generate_position(self, prev_pos, next_pos):
-        """
-        Generate unique position ID between prev and next
-        """
-        if prev_pos is None:
-            base = [0]
-        else:
-            base = list(prev_pos)
-        
-        if next_pos is None:
-            base.append(self.clock)
-            base.append(self.site_id)
-            return tuple(base)
-        
-        # Find first position where they differ
-        for i in range(min(len(base), len(next_pos))):
-            if base[i] < next_pos[i]:
-                # Can insert between
-                base.append(self.clock)
-                base.append(self.site_id)
-                return tuple(base)
-        
-        # Need to extend
-        base.append(self.clock)
-        base.append(self.site_id)
-        return tuple(base)
-    
-    def find_index(self, pos_id):
-        # Binary search
-        left, right = 0, len(self.sequence)
-        
-        while left < right:
-            mid = (left + right) // 2
-            if self.sequence[mid][0] < pos_id:
-                left = mid + 1
-            else:
-                right = mid
-        
-        return left
-    
-    def get_text(self):
-        return ''.join(char for _, char in self.sequence)
-```
-
-**3. WebSocket Server**
-
-```python
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from typing import Dict, Set
-import asyncio
-
-app = FastAPI()
-
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: Dict[str, Set[WebSocket]] = {}
-        self.user_documents: Dict[WebSocket, str] = {}
-    
-    async def connect(self, websocket: WebSocket, doc_id: str, user_id: str):
-        await websocket.accept()
-        
-        if doc_id not in self.active_connections:
-            self.active_connections[doc_id] = set()
-        
-        self.active_connections[doc_id].add(websocket)
-        self.user_documents[websocket] = doc_id
-        
-        # Send current document state
-        document = await load_document(doc_id)
-        await websocket.send_json({
-            'type': 'init',
-            'content': document['content'],
-            'version': document['version'],
-            'collaborators': len(self.active_connections[doc_id])
-        })
-        
-        # Notify other users
-        await self.broadcast(doc_id, {
-            'type': 'user_joined',
-            'user_id': user_id
-        }, exclude=websocket)
-    
-    def disconnect(self, websocket: WebSocket):
-        doc_id = self.user_documents.get(websocket)
-        
-        if doc_id and doc_id in self.active_connections:
-            self.active_connections[doc_id].discard(websocket)
-            
-            if not self.active_connections[doc_id]:
-                del self.active_connections[doc_id]
-        
-        if websocket in self.user_documents:
-            del self.user_documents[websocket]
-    
-    async def broadcast(self, doc_id: str, message: dict, exclude: WebSocket = None):
-        if doc_id in self.active_connections:
-            for connection in self.active_connections[doc_id]:
-                if connection != exclude:
-                    try:
-                        await connection.send_json(message)
-                    except:
-                        pass
-
-manager = ConnectionManager()
-
-@app.websocket("/ws/{doc_id}/{user_id}")
-async def websocket_endpoint(websocket: WebSocket, doc_id: str, user_id: str):
-    await manager.connect(websocket, doc_id, user_id)
-    
-    try:
-        while True:
-            data = await websocket.receive_json()
-            
-            # Process operation
-            if data['type'] == 'operation':
-                operation = data['operation']
-                
-                # Apply to document
-                await apply_operation(doc_id, operation)
-                
-                # Broadcast to other users
-                await manager.broadcast(doc_id, {
-                    'type': 'operation',
-                    'operation': operation,
-                    'user_id': user_id
-                }, exclude=websocket)
-            
-            elif data['type'] == 'cursor':
-                # Broadcast cursor position
-                await manager.broadcast(doc_id, {
-                    'type': 'cursor',
-                    'user_id': user_id,
-                    'position': data['position']
-                }, exclude=websocket)
-            
-    except WebSocketDisconnect:
-        manager.disconnect(websocket)
-        
-        await manager.broadcast(doc_id, {
-            'type': 'user_left',
-            'user_id': user_id
-        })
-```
-
-**4. Document Storage**
-
-```python
-from motor.motor_asyncio import AsyncIOMotorClient
-
-mongo_client = AsyncIOMotorClient('mongodb://localhost:27017')
-db = mongo_client['collaborative_docs']
-
-async def load_document(doc_id):
-    document = await db.documents.find_one({'_id': doc_id})
-    
-    if not document:
-        # Create new document
-        document = {
-            '_id': doc_id,
-            'content': '',
-            'version': 0,
-            'created_at': datetime.now(),
-            'updated_at': datetime.now()
-        }
-        await db.documents.insert_one(document)
-    
-    return document
-
-async def apply_operation(doc_id, operation):
-    # Get document
-    document = await db.documents.find_one({'_id': doc_id})
-    
-    # Apply operation to content
-    doc_obj = Document(doc_id)
-    doc_obj.content = document['content']
-    doc_obj.version = document['version']
-    
-    new_content = doc_obj.apply_operation(operation)
-    
-    # Update database
-    await db.documents.update_one(
-        {'_id': doc_id},
-        {
-            '$set': {
-                'content': new_content,
-                'version': doc_obj.version,
-                'updated_at': datetime.now()
-            }
-        }
-    )
-    
-    # Save to version history
-    await db.versions.insert_one({
-        'doc_id': doc_id,
-        'version': doc_obj.version,
-        'operation': operation,
-        'content_snapshot': new_content if doc_obj.version % 10 == 0 else None,  # Full snapshot every 10 versions
-        'timestamp': datetime.now()
-    })
-```
-
-**5. Offline Sync**
-
-```python
-class OfflineQueue:
-    def __init__(self, doc_id):
-        self.doc_id = doc_id
-        self.queue = []
-        self.last_synced_version = 0
-    
-    def add_operation(self, operation):
-        # Add to local queue
-        self.queue.append(operation)
-        
-        # Save to IndexedDB (client-side)
-        save_to_indexeddb(self.doc_id, self.queue)
-    
-    async def sync(self):
-        if not self.queue:
-            return
-        
-        # Get current server version
-        server_version = await get_server_version(self.doc_id)
-        
-        # Transform local operations against server operations
-        if server_version > self.last_synced_version:
-            server_ops = await get_operations_since(
-                self.doc_id,
-                self.last_synced_version
-            )
-            
-            # Transform local operations
-            for server_op in server_ops:
-                for i, local_op in enumerate(self.queue):
-                    local_op_prime, server_op_prime = OperationalTransform.transform(
-                        local_op, server_op
-                    )
-                    self.queue[i] = local_op_prime
-        
-        # Send operations to server
-        for operation in self.queue:
-            await send_operation(self.doc_id, operation)
-        
-        # Clear queue
-        self.queue = []
-        self.last_synced_version = server_version + len(self.queue)
-        
-        save_to_indexeddb(self.doc_id, self.queue)
-```
-
-**6. Version History & Restore**
-
-```python
-async def get_version_history(doc_id, limit=50):
-    versions = await db.versions.find(
-        {'doc_id': doc_id}
-    ).sort('version', -1).limit(limit).to_list(length=limit)
-    
-    return [
-        {
-            'version': v['version'],
-            'timestamp': v['timestamp'],
-            'user_id': v['operation'].get('user_id'),
-            'operation_type': v['operation'].get('type')
-        }
-        for v in versions
-    ]
-
-async def restore_version(doc_id, target_version):
-    # Get latest snapshot before# Advanced System Design Solutions (11-20) - NAVER Interview
-
-## 17. Design a Commenting and Review System (WEBTOON Comments / NAVER Shopping Reviews)
-
-### Requirements
-- 150 triệu users
-- 500M comments/ngày
-- Threading support
-- Real-time updates
-- Content moderation & anti-spam
-- Sorting: newest, popular, relevant
-
-### High-Level Architecture
-
-```
-[Client Apps]
-      ↓
-[API Gateway + Rate Limiter]
-      ↓
-[Comment Service Cluster]
-      ↓
-   ┌──┴────────┬─────────┬────────┐
-   ↓           ↓         ↓        ↓
-[Write DB]  [Read DB]  [Search] [Moderation]
-(Cassandra) (Replica)  (ES)     Service (ML)
-   ↓           ↓         ↓
-[Notification Service] ←→ [Pub/Sub (Kafka)]
-      ↓
-[CDN for static content]
-```
-
-### Core Components
-
-**1. Comment Data Model**
-
-```python
-from dataclasses import dataclass
-from datetime import datetime
-from enum import Enum
-from typing import Optional, List
-
-class CommentStatus(Enum):
-    PENDING = "pending"
-    APPROVED = "approved"
-    REJECTED = "rejected"
-    DELETED = "deleted"
-
-@dataclass
-class Comment:
-    comment_id: str
-    content_id: str  # Article/Product/Episode ID
-    content_type: str  # webtoon, shopping, news
-    parent_id: Optional[str]  # For threading
-    user_id: int
-    text: str
-    status: CommentStatus
-    likes: int
-    dislikes: int
-    reply_count: int
-    depth: int  # Thread depth (max 3)
-    created_at: datetime
-    updated_at: datetime
-    metadata: dict  # Device, IP, etc.
-```
-
-**2. Comment Service Implementation**
-
-```python
-from fastapi import FastAPI, HTTPException
-from cassandra.cluster import Cluster
-import redis
-import uuid
-
-app = FastAPI()
-cassandra = Cluster(['cassandra-node1', 'cassandra-node2']).connect('comments')
-redis_client = redis.Redis(host='redis-cluster', decode_responses=True)
-
-@app.post("/api/v1/comments")
-async def create_comment(content_id: str, user_id: int, text: str, parent_id: str = None):
-    # 1. Rate limiting
-    if not check_rate_limit(user_id):
-        raise HTTPException(429, "Too many comments")
-    
-    # 2. Content moderation
-    moderation_result = await moderate_content(text, user_id)
-    if moderation_result['blocked']:
-        raise HTTPException(400, f"Comment blocked: {moderation_result['reason']}")
-    
-    # 3. Spam detection
-    if await is_spam(text, user_id):
-        raise HTTPException(400, "Spam detected")
-    
-    # 4. Create comment
-    comment_id = str(uuid.uuid4())
-    depth = 0
-    
-    if parent_id:
-        parent = await get_comment(parent_id)
-        if parent['depth'] >= 3:
-            raise HTTPException(400, "Max thread depth reached")
-        depth = parent['depth'] + 1
-    
-    comment = {
-        'comment_id': comment_id,
-        'content_id': content_id,
-        'parent_id': parent_id,
-        'user_id': user_id,
-        'text': text,
-        'status': 'approved' if moderation_result['auto_approve'] else 'pending',
-        'likes': 0,
-        'dislikes': 0,
-        'reply_count': 0,
-        'depth': depth,
-        'created_at': datetime.now()
-    }
-    
-    # 5. Save to Cassandra
-    await save_comment(comment)
-    
-    # 6. Update parent reply count
-    if parent_id:
-        await increment_reply_count(parent_id)
-    
-    # 7. Publish event for real-time updates
-    await publish_comment_event(content_id, comment)
-    
-    # 8. Index for search
-    await index_comment(comment)
-    
-    return comment
-
-@app.get("/api/v1/comments/{content_id}")
-async def get_comments(content_id: str, sort: str = "newest", page: int = 1, limit: int = 20):
-    # Check cache first
-    cache_key = f"comments:{content_id}:{sort}:{page}"
-    cached = redis_client.get(cache_key)
-    if cached:
-        return json.loads(cached)
-    
-    # Query based on sort
-    if sort == "newest":
-        comments = await get_comments_by_time(content_id, page, limit)
-    elif sort == "popular":
-        comments = await get_comments_by_popularity(content_id, page, limit)
-    elif sort == "relevant":
-        comments = await get_comments_by_relevance(content_id, page, limit)
-    
-    # Fetch replies for each comment
-    for comment in comments:
-        comment['replies'] = await get_replies(comment['comment_id'], limit=3)
-    
-    # Cache for 1 minute
-    redis_client.setex(cache_key, 60, json.dumps(comments))
-    
-    return comments
-```
-
-**3. Content Moderation System**
-
-```python
-from transformers import pipeline
-import re
-
-class ContentModerator:
-    def __init__(self):
-        self.toxic_classifier = pipeline("text-classification", model="unitary/toxic-bert")
-        self.spam_patterns = self.load_spam_patterns()
-        self.banned_words = self.load_banned_words()
-    
-    async def moderate(self, text: str, user_id: int) -> dict:
-        result = {
-            'blocked': False,
-            'reason': None,
-            'auto_approve': True,
-            'flags': []
-        }
-        
-        # 1. Check banned words
-        if self.contains_banned_words(text):
-            result['blocked'] = True
-            result['reason'] = 'banned_words'
-            return result
-        
-        # 2. Check spam patterns
-        if self.matches_spam_pattern(text):
-            result['blocked'] = True
-            result['reason'] = 'spam_pattern'
-            return result
-        
-        # 3. ML toxicity check
-        toxicity_score = await self.check_toxicity(text)
-        if toxicity_score > 0.9:
-            result['blocked'] = True
-            result['reason'] = 'toxic_content'
-            return result
-        elif toxicity_score > 0.7:
-            result['auto_approve'] = False
-            result['flags'].append('needs_review')
-        
-        # 4. Check user history
-        user_trust_score = await self.get_user_trust_score(user_id)
-        if user_trust_score < 0.3:
-            result['auto_approve'] = False
-            result['flags'].append('low_trust_user')
-        
-        return result
-    
-    async def check_toxicity(self, text: str) -> float:
-        result = self.toxic_classifier(text)[0]
-        return result['score'] if result['label'] == 'toxic' else 1 - result['score']
-    
-    def contains_banned_words(self, text: str) -> bool:
-        text_lower = text.lower()
-        for word in self.banned_words:
-            if word in text_lower:
-                return True
-        return False
-    
-    def matches_spam_pattern(self, text: str) -> bool:
-        for pattern in self.spam_patterns:
-            if re.search(pattern, text, re.IGNORECASE):
-                return True
-        return False
-```
-
-**4. Spam Detection**
-
-```python
-class SpamDetector:
-    def __init__(self):
-        self.redis = redis.Redis()
-    
-    async def is_spam(self, text: str, user_id: int) -> bool:
-        # 1. Duplicate content check
-        text_hash = hashlib.md5(text.encode()).hexdigest()
-        if self.redis.exists(f"comment_hash:{text_hash}"):
-            return True
-        
-        # 2. Rate-based spam (too many comments in short time)
-        recent_count = self.redis.incr(f"user_comments:{user_id}:minute")
-        if recent_count == 1:
-            self.redis.expire(f"user_comments:{user_id}:minute", 60)
-        if recent_count > 10:
-            return True
-        
-        # 3. Repetitive content from same user
-        similarity = await self.check_similarity_with_recent(user_id, text)
-        if similarity > 0.8:
-            return True
-        
-        # Mark this comment hash
-        self.redis.setex(f"comment_hash:{text_hash}", 3600, "1")
-        
-        return False
-    
-    async def check_similarity_with_recent(self, user_id: int, text: str) -> float:
-        recent_comments = self.redis.lrange(f"user_recent_comments:{user_id}", 0, 9)
-        
-        if not recent_comments:
-            return 0
-        
-        from difflib import SequenceMatcher
-        
-        max_similarity = 0
-        for prev_text in recent_comments:
-            similarity = SequenceMatcher(None, text.lower(), prev_text.decode().lower()).ratio()
-            max_similarity = max(max_similarity, similarity)
-        
-        return max_similarity
-```
-
-**5. Real-time Updates with WebSocket**
-
-```python
-from fastapi import WebSocket
-import asyncio
-
-class CommentWebSocketManager:
-    def __init__(self):
-        self.connections: dict[str, set[WebSocket]] = {}
-    
-    async def connect(self, websocket: WebSocket, content_id: str):
-        await websocket.accept()
-        if content_id not in self.connections:
-            self.connections[content_id] = set()
-        self.connections[content_id].add(websocket)
-    
-    def disconnect(self, websocket: WebSocket, content_id: str):
-        if content_id in self.connections:
-            self.connections[content_id].discard(websocket)
-    
-    async def broadcast_comment(self, content_id: str, comment: dict):
-        if content_id in self.connections:
-            message = json.dumps({
-                'type': 'new_comment',
-                'data': comment
-            })
-            for connection in self.connections[content_id]:
-                try:
-                    await connection.send_text(message)
-                except:
-                    pass
-
-ws_manager = CommentWebSocketManager()
-
-@app.websocket("/ws/comments/{content_id}")
-async def websocket_endpoint(websocket: WebSocket, content_id: str):
-    await ws_manager.connect(websocket, content_id)
-    try:
-        while True:
-            await websocket.receive_text()  # Keep connection alive
-    except:
-        ws_manager.disconnect(websocket, content_id)
-```
-
-**6. Threading & Nested Comments**
-
-```python
-# Cassandra schema for efficient threading
-"""
-CREATE TABLE comments_by_content (
-    content_id UUID,
-    created_at TIMESTAMP,
-    comment_id UUID,
-    parent_id UUID,
-    user_id BIGINT,
-    text TEXT,
-    likes INT,
-    depth INT,
-    PRIMARY KEY ((content_id), created_at, comment_id)
-) WITH CLUSTERING ORDER BY (created_at DESC);
-
-CREATE TABLE replies_by_parent (
-    parent_id UUID,
-    created_at TIMESTAMP,
-    comment_id UUID,
-    user_id BIGINT,
-    text TEXT,
-    likes INT,
-    PRIMARY KEY ((parent_id), created_at, comment_id)
-) WITH CLUSTERING ORDER BY (created_at DESC);
-"""
-
-async def get_threaded_comments(content_id: str, limit: int = 20):
-    # Get top-level comments
-    top_level = await cassandra.execute_async("""
-        SELECT * FROM comments_by_content
-        WHERE content_id = ? AND depth = 0
-        ORDER BY created_at DESC
-        LIMIT ?
-    """, [content_id, limit])
-    
-    # Fetch replies for each
-    result = []
-    for comment in top_level:
-        comment_dict = dict(comment)
-        comment_dict['replies'] = await get_replies(comment['comment_id'], limit=5)
-        result.append(comment_dict)
-    
-    return result
-
-async def get_replies(parent_id: str, limit: int = 5):
-    replies = await cassandra.execute_async("""
-        SELECT * FROM replies_by_parent
-        WHERE parent_id = ?
-        ORDER BY created_at DESC
-        LIMIT ?
-    """, [parent_id, limit])
-    
-    return list(replies)
-```
-
-**7. Like/Dislike System**
-
-```python
-@app.post("/api/v1/comments/{comment_id}/like")
-async def like_comment(comment_id: str, user_id: int):
-    # Prevent duplicate likes
-    like_key = f"like:{comment_id}:{user_id}"
-    
-    if redis_client.exists(like_key):
-        raise HTTPException(400, "Already liked")
-    
-    # Atomic increment
-    await cassandra.execute_async("""
-        UPDATE comments SET likes = likes + 1 WHERE comment_id = ?
-    """, [comment_id])
-    
-    # Mark as liked
-    redis_client.set(like_key, "1")
-    
-    # Invalidate cache
-    await invalidate_comment_cache(comment_id)
-    
-    return {"success": True}
-```
-
-**8. Sorting Strategies**
-
-```python
-async def get_comments_by_popularity(content_id: str, page: int, limit: int):
-    # Use materialized view or secondary index
-    offset = (page - 1) * limit
-    
-    # Score = likes - dislikes + reply_count * 2
-    comments = await cassandra.execute_async("""
-        SELECT * FROM comments_by_content
-        WHERE content_id = ?
-    """, [content_id])
-    
-    # Sort by popularity score
-    sorted_comments = sorted(
-        comments,
-        key=lambda c: c['likes'] - c['dislikes'] + c['reply_count'] * 2,
-        reverse=True
-    )
-    
-    return sorted_comments[offset:offset + limit]
-
-async def get_comments_by_relevance(content_id: str, page: int, limit: int):
-    # Use Elasticsearch for relevance scoring
-    query = {
-        "query": {
-            "bool": {
-                "must": [{"term": {"content_id": content_id}}],
-                "should": [
-                    {"range": {"likes": {"gte": 10}}},
-                    {"term": {"is_verified_user": True}},
-                    {"range": {"created_at": {"gte": "now-24h"}}}
-                ]
-            }
-        },
-        "from": (page - 1) * limit,
-        "size": limit
-    }
-    
-    result = await es.search(index="comments", body=query)
-    return [hit['_source'] for hit in result['hits']['hits']]
-```
-
-**9. Fan-out for Popular Content**
-
-```python
-class CommentFanOut:
-    def __init__(self):
-        self.hot_content_threshold = 1000  # Comments per hour
-    
-    async def handle_new_comment(self, content_id: str, comment: dict):
-        # Check if content is "hot"
-        hourly_count = redis_client.incr(f"content_comments_hourly:{content_id}")
-        if hourly_count == 1:
-            redis_client.expire(f"content_comments_hourly:{content_id}", 3600)
-        
-        if hourly_count > self.hot_content_threshold:
-            # Hot content: use fan-out on read
-            await self.store_in_main_feed(content_id, comment)
-        else:
-            # Normal: fan-out on write
-            await self.fan_out_to_subscribers(content_id, comment)
-    
-    async def fan_out_to_subscribers(self, content_id: str, comment: dict):
-        # Get subscribers (users following this content)
-        subscribers = await get_content_subscribers(content_id)
-        
-        # Push to each subscriber's notification feed
-        for user_id in subscribers[:1000]:  # Limit fan-out
-            await push_notification(user_id, {
-                'type': 'new_comment',
-                'content_id': content_id,
-                'comment': comment
-            })
-```
-
-**10. Monitoring & Analytics**
-
-```python
-comment_metrics = {
-    'comments_created': Counter('comments_created_total'),
-    'comments_moderated': Counter('comments_moderated_total', ['action']),
-    'comment_latency': Histogram('comment_creation_latency_seconds'),
-    'spam_detected': Counter('spam_comments_detected_total')
-}
-
-async def track_comment_analytics(content_id: str, comment: dict):
-    # Real-time analytics
-    analytics_event = {
-        'content_id': content_id,
-        'user_id': comment['user_id'],
-        'timestamp': datetime.now().isoformat(),
-        'text_length': len(comment['text']),
-        'has_parent': comment['parent_id'] is not None
-    }
-    
-    # Send to Kafka for processing
-    await kafka_producer.send('comment_analytics', analytics_event)
-    
-    # Update content engagement score
-    redis_client.zincrby('content_engagement', 1, content_id)
-```
+| Hotspot | Symptom | Fix |
+|--------|---------|-----|
+| S3 download/upload chậm | Worker idle / job time tăng | colocate workers gần bucket, use multipart, tuned retry |
+| One huge file (p99) | Job chiếm worker lâu | Split pipeline, priority queue, per-tenant quotas |
+| Spot interruptions | Job fail giữa chừng | checkpoint, requeue, mixed on-demand baseline |
 
 ---
 
-## 18. Design a Location-Based Service (NAVER Maps)
+## 📊 Observability
 
-### Requirements
-- 200 triệu users
-- 1 tỷ queries/ngày
-- Real-time location search
-- Routing & navigation
-- Nearby recommendations
-- Geo-sharding
+Metrics nên có:
+- `transcode_jobs_queued`, `transcode_jobs_processing`, `transcode_jobs_failed`
+- `transcode_queue_oldest_age_seconds`
+- `transcode_duration_seconds{profile}` (histogram)
+- `s3_download_bytes_total`, `s3_upload_bytes_total`
+- `worker_cpu_utilization`, `worker_oom_killed_total`
 
-### High-Level Architecture
+Tracing/Logs:
+- Trace per job: `download → transcode(profile*) → upload → manifest`
+- Log `video_id`, `profile`, `attempt`, `ffmpeg_exit_code`, `error_category`
 
-```
-[Mobile/Web Clients]
-      ↓
-[CDN (Map Tiles)]
-      ↓
-[API Gateway + Load Balancer]
-      ↓
-   ┌──┴────────┬─────────┬────────┐
-   ↓           ↓         ↓        ↓
-[Location  [Routing   [POI      [Traffic
- Service]   Service]  Service]   Service]
-   ↓           ↓         ↓        ↓
-[GeoDB (PostGIS)] [Graph DB] [Elasticsearch]
-   ↓
-[Real-time Traffic Data (Kafka)]
-```
+---
 
-### Core Components
+## 💡 Phase 6: Interview Tips
 
-**1. Geospatial Data Model**
+**Common Questions:**
+1. **"Làm sao handle job failure giữa chừng?"**
+   - Checkpoint progress
+   - Resume từ segment cuối
+   - Dead letter queue cho permanent failures
 
-```python
-from dataclasses import dataclass
-from typing import List, Optional, Tuple
-from enum import Enum
+2. **"Priority queue cho premium users?"**
+   - Multiple queues (high, normal, low)
+   - Weighted polling
 
-class POICategory(Enum):
-    RESTAURANT = "restaurant"
-    CAFE = "cafe"
-    HOTEL = "hotel"
-    GAS_STATION = "gas_station"
-    HOSPITAL = "hospital"
-    SHOPPING = "shopping"
-    PARKING = "parking"
+### 🎬 FFmpeg Commands - Must Know
 
-@dataclass
-class Location:
-    latitude: float
-    longitude: float
-    
-    def to_point(self):
-        return f"POINT({self.longitude} {self.latitude})"
+```bash
+# Basic transcoding to different resolutions
+ffmpeg -i input.mp4 \
+  -vf "scale=1920:1080" -c:v libx264 -preset medium -crf 23 \
+  -c:a aac -b:a 128k output_1080p.mp4
 
-@dataclass
-class POI:
-    poi_id: str
-    name: str
-    category: POICategory
-    location: Location
-    address: str
-    phone: Optional[str]
-    rating: float
-    review_count: int
-    price_level: int
-    opening_hours: dict
-    photos: List[str]
-    tags: List[str]
+# Generate HLS segments (for adaptive streaming)
+ffmpeg -i input.mp4 \
+  -c:v libx264 -c:a aac \
+  -hls_time 6 \                    # 6-second segments
+  -hls_playlist_type vod \         # Video on demand
+  -hls_segment_filename "seg%03d.ts" \
+  output.m3u8
 
-@dataclass
-class BoundingBox:
-    min_lat: float
-    min_lng: float
-    max_lat: float
-    max_lng: float
+# Generate thumbnail at 10 seconds
+ffmpeg -i input.mp4 -ss 10 -vframes 1 thumbnail.jpg
+
+# Extract audio only
+ffmpeg -i input.mp4 -vn -c:a mp3 audio.mp3
+
+# Hardware acceleration (if available)
+ffmpeg -hwaccel cuda -i input.mp4 -c:v h264_nvenc output.mp4
 ```
 
-**2. PostGIS Database Schema**
+### 🗄️ Job Management Schema
 
 ```sql
--- Enable PostGIS extension
+CREATE TABLE transcoding_jobs (
+    id UUID PRIMARY KEY,
+    video_id UUID NOT NULL,
+    
+    -- Source
+    source_s3_bucket VARCHAR(100) NOT NULL,
+    source_s3_key VARCHAR(500) NOT NULL,
+    source_format VARCHAR(20),
+    source_duration_seconds INT,
+    source_size_bytes BIGINT,
+    
+    -- Target profiles
+    target_profiles JSONB NOT NULL,  -- ['1080p', '720p', '480p']
+    
+    -- Status tracking
+    status VARCHAR(20) NOT NULL DEFAULT 'QUEUED',
+    progress_percent INT DEFAULT 0,
+    current_profile VARCHAR(20),
+    
+    -- Results
+    output_s3_prefix VARCHAR(500),
+    master_playlist_url VARCHAR(500),
+    
+    -- Timing
+    queued_at TIMESTAMP DEFAULT NOW(),
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    
+    -- Worker info
+    worker_id VARCHAR(100),
+    attempt_count INT DEFAULT 0,
+    last_error TEXT,
+    
+    -- Priority (0 = highest)
+    priority INT DEFAULT 5,
+    user_tier VARCHAR(20),  -- premium, standard, free
+    
+    CONSTRAINT valid_status CHECK (status IN (
+        'QUEUED', 'PROCESSING', 'COMPLETED', 'FAILED', 'CANCELLED'
+    ))
+);
+
+-- Index for worker polling
+CREATE INDEX idx_jobs_queue ON transcoding_jobs (priority, queued_at) 
+    WHERE status = 'QUEUED';
+
+-- Index for status queries
+CREATE INDEX idx_jobs_video ON transcoding_jobs (video_id);
+```
+
+### ⚠️ Failure Scenarios & Handling
+
+| Failure | Detection | Impact | Recovery |
+|---------|-----------|--------|----------|
+| **Spot instance termination** | AWS 2-min warning | Job incomplete | Checkpoint, requeue remaining |
+| **Corrupt input file** | FFmpeg error | Job fails | Mark failed, notify user |
+| **Storage full** | Write error | Job fails | Alert ops, scale storage |
+| **Memory OOM** | Process killed | Job hangs | Reduce concurrent profiles |
+| **Network timeout** | S3 download fails | Job fails | Retry with backoff |
+
+```python
+class TranscodeJobWithCheckpoints:
+    """
+    Transcoding job with checkpoint/resume capability.
+    """
+    
+    def __init__(self, job_id, redis):
+        self.job_id = job_id
+        self.redis = redis
+        self.checkpoint_key = f"transcode:checkpoint:{job_id}"
+    
+    async def process(self, input_path, profiles):
+        # Check for existing checkpoint
+        checkpoint = await self.redis.hgetall(self.checkpoint_key)
+        
+        completed_profiles = set(checkpoint.get('completed', '').split(','))
+        
+        for profile in profiles:
+            if profile in completed_profiles:
+                logger.info(f"Skipping {profile} - already done")
+                continue
+            
+            try:
+                await self.transcode_profile(input_path, profile)
+                
+                # Save checkpoint after each profile
+                completed_profiles.add(profile)
+                await self.redis.hset(
+                    self.checkpoint_key,
+                    'completed', ','.join(completed_profiles)
+                )
+                
+            except SpotTerminationWarning:
+                # Save state and exit gracefully
+                await self.redis.hset(
+                    self.checkpoint_key,
+                    'interrupted_at', profile
+                )
+                raise
+        
+        # Cleanup checkpoint on success
+        await self.redis.delete(self.checkpoint_key)
+```
+
+### 🌍 Real-World Case Study: Netflix Video Encoding
+
+| Aspect | Netflix's Approach | Learning |
+|--------|-------------------|----------|
+| **Scale** | 100+ hours uploaded/day | Need massive parallel processing |
+| **Per-title encoding** | Custom bitrate ladder per video | Optimize storage per content type |
+| **Quality metrics** | VMAF (Video Multi-Method Assessment) | Not just bitrate, but perceived quality |
+| **Storage** | Store EVERY resolution | Trade storage cost for compute |
+| **Global delivery** | Open Connect CDN | Pre-position popular content |
+
+**Key Takeaways:**
+1. **Parallel everything** - Each resolution can be done independently
+2. **Checkpoint aggressively** - Spot termination is common
+3. **Quality metrics matter** - VMAF > bitrate for user experience
+4. **Cost optimization is continuous** - Reserved vs Spot vs On-demand mix
+
+# 16. Collaborative Editing System
+
+> **Ví dụ thực tế**: Google Docs, Notion, Figma  
+> **Độ khó**: ⭐⭐⭐⭐⭐ (phức tạp nhất về concurrency)
+
+## 🎯 Phase 1: Understand the Problem
+
+### The Core Challenge
+
+```
+User A types "Hello" at position 0
+User B types "World" at position 0 (same time)
+
+Result should be: "HelloWorld" or "WorldHello"
+NOT: "HWeolrllod" (interleaved mess)
+```
+
+### Requirements
+- **FR1**: Multiple users edit same document simultaneously
+- **FR2**: All users see same final state
+- **FR3**: Real-time (<100ms) update propagation
+- **NFR1**: Conflict resolution must be deterministic
+
+### Clarifying Questions
+
+| Câu hỏi | Vì sao quan trọng | Giả định |
+|--------|--------------------|----------|
+| Text docs hay rich-text (formatting, embeds)? | Data model + ops khác nhau | Rich-text (subset) |
+| Offline editing có bắt buộc không? | Quyết định CRDT vs OT | Có |
+| Concurrent editors/document? | WebSocket fanout + state mgmt | 50 concurrent |
+| Cần version history/restore không? | Storage + snapshots | Có |
+| Ordering guarantee? | Causality/sequence numbers | Server assigns seq |
+
+---
+
+## 📊 Phase 2: Capacity Estimation (5 phút)
+
+Giả sử:
+- DAU: 10M
+- Concurrent editors peak: 1M
+- Avg docs open concurrently: 200K docs
+- Mỗi user tạo ~2 ops/sec (typing + cursor) → ~2M ops/sec peak
+
+Hệ quả:
+- Hot path phải cực nhẹ: validate + transform/merge + publish.
+- Presence/cursor updates phải tách khỏi content ops (vì tần suất cao, độ quan trọng thấp hơn).
+
+**Bandwidth rough**:
+- 1 op ~ 100–500 bytes (tuỳ rich-text)
+- 2M ops/sec × 200 bytes ≈ 400MB/s internal pub/sub (cần sharding theo doc_id).
+
+---
+
+## 🏗️ Phase 3: High-Level Design
+
+### Architecture Overview
+
+```
+┌──────────────┐   WebSocket   ┌──────────────────────┐
+│ Clients      │◀────────────▶│ WebSocket Gateway      │
+│ (web/mobile) │              │ (auth, fanout)         │
+└──────┬───────┘              └──────────┬─────────────┘
+    │                                  │
+    │ ops (insert/delete/format)       │ pub/sub per doc
+    ▼                                  ▼
+┌──────────────────────┐        ┌──────────────────────┐
+│ Collaboration Engine  │        │ Presence Service      │
+│ (OT or CRDT)          │        │ (cursors, users)      │
+└──────────┬───────────┘        └──────────┬───────────┘
+        │                               │
+        │ snapshots + op log            │ ephemeral state
+        ▼                               ▼
+┌──────────────────────┐        ┌──────────────────────┐
+│ Document Store        │        │ Redis (presence)      │
+│ (Mongo/Postgres)      │        │ TTL keys              │
+└──────────┬───────────┘        └──────────────────────┘
+        │
+        ▼
+┌──────────────────────┐
+│ Version History       │
+│ (S3 + metadata DB)    │
+└──────────────────────┘
+```
+
+### Data model choices (tóm tắt)
+
+- **OT**: Centralized engine, transform operations theo thứ tự server.
+- **CRDT**: Offline-first mạnh, merge deterministic, nhưng storage overhead.
+
+Trong interview: nói rõ **chọn 1** theo requirements. Nếu offline bắt buộc + multi-region → nghiêng CRDT.
+
+---
+
+## Deep Reading Notes (Q16)
+
+- Hot path (content ops): WS receive → validate/op_id dedupe → transform/merge (OT/CRDT) → append op log → publish to doc room → ack.
+- Hot path (presence): WS receive cursor → write Redis TTL → fanout best-effort.
+- Invariants:
+    - Deterministic convergence: mọi replica phải ra cùng state.
+    - Exactly-once apply per `op_id` (retry không làm double-apply).
+    - Causality/order tracking: client_seq + server_seq (hoặc vector/lamport).
+- 3 trade-offs phải nói được:
+    - OT vs CRDT: centralized transform vs offline-first merge.
+    - Persist-first vs publish-first: correctness vs latency (thường persist-before-ack).
+    - Snapshot frequency: replay nhanh vs chi phí storage/IO.
+- Failure drills:
+    - Network partition 2 phút rồi reconnect: bạn replay/merge thế nào? user có thấy conflict UI không?
+    - Gateway shard crash khi doc đang hot: reconnect routing + resubscribe room + replay from last_ack_seq.
+
+## 🔬 Phase 4: Deep Dive - Conflict Resolution
+
+### 4.1 Operational Transformation (OT)
+
+**Concept**: Transform operations against each other
+
+```
+Server state: ""
+
+User A: insert("a", 0) → "a"
+User B: insert("b", 0) → should get "ba" or "ab"?
+
+OT transformation:
+1. A arrives first: state = "a"
+2. B arrives: insert("b", 0) BUT A already inserted at 0
+3. Transform B: insert("b", 1) → "ab"
+```
+
+```python
+def transform(op1, op2):
+    """
+    Transform op2 given that op1 has already been applied.
+    
+    Complexity: O(1) per operation
+    But: Need to track all pending operations
+    """
+    if op1.type == 'insert' and op2.type == 'insert':
+        if op2.position >= op1.position:
+            # Shift op2 right because op1 added a character before
+            return Insert(op2.char, op2.position + 1)
+        else:
+            return op2  # op2 comes before, no change
+            
+    if op1.type == 'insert' and op2.type == 'delete':
+        if op2.position >= op1.position:
+            return Delete(op2.position + 1)
+        else:
+            return op2
+    
+    # ... more cases for delete × delete, etc.
+```
+
+**Pros**: Well-understood, used by Google Docs  
+**Cons**: Complex transformation rules, centralized
+
+### 4.2 CRDT (Conflict-free Replicated Data Types)
+
+**Concept**: Design data structure that can merge without conflicts
+
+```python
+class RGA:
+    """
+    Replicated Growable Array - CRDT for text.
+    
+    Each character has unique ID = (timestamp, node_id)
+    Insert: Add between two existing IDs
+    Delete: Mark as tombstone (don't actually remove)
+    
+    Merge: Sort by ID → deterministic order
+    """
+    
+    def __init__(self, node_id):
+        self.node_id = node_id
+        self.sequence = []  # [(id, char, deleted), ...]
+        self.clock = 0
+    
+    def insert(self, position, char):
+        self.clock += 1
+        new_id = (self.clock, self.node_id)
+        
+        # Find position in sequence
+        left_id = self.get_id_at(position - 1)
+        right_id = self.get_id_at(position)
+        
+        # Insert with ID
+        self.sequence.insert(position, (new_id, char, False))
+        
+        # Broadcast to other nodes
+        return InsertOp(new_id, left_id, right_id, char)
+    
+    def merge(self, op):
+        """
+        When receiving op from another node:
+        - Find position based on left_id, right_id
+        - Insert maintaining ID order
+        - Deterministic because IDs are unique and ordered
+        """
+        # Find correct position
+        position = self.find_position(op.left_id, op.right_id, op.id)
+        self.sequence.insert(position, (op.id, op.char, False))
+```
+
+**Pros**: No central server needed, eventually consistent  
+**Cons**: Storage overhead (tombstones), complex
+
+### OT vs CRDT Comparison
+
+| Aspect | OT | CRDT |
+|--------|----|----- |
+| **Central server** | Required | Optional |
+| **Complexity** | In transformation | In data structure |
+| **Storage** | Efficient | Tombstones overhead |
+| **Real-world** | Google Docs | Figma, Notion |
+
+---
+
+## 📈 Phase 5: Scaling, Consistency, Failure Modes
+
+### Sharding strategy
+
+- Route connections by `doc_id` to keep all ops of a doc on the same shard (sticky routing).
+- Hot documents (very popular) → split by **doc_id + room instance** + use CRDT merge (advanced).
+
+### Reliability patterns
+
+- **Op log**: append-only log per document (Kafka topic partitioned by doc_id hoặc DB table).
+- **Snapshotting**: periodic snapshot (e.g., every 30s hoặc every N ops) để replay nhanh.
+- **Backpressure**: nếu client spam ops → server rate limit per connection.
+
+### Failure scenarios
+
+| Failure | Impact | Mitigation |
+|---------|--------|------------|
+| Gateway node crash | users reconnect | stateless gateway + reconnect token |
+| Partition / high latency | diverged states | CRDT merge, OT rebase on reconnect |
+| Message loss | missing ops | op log with ack + replay |
+| Duplicate ops (retry) | double-apply | op_id idempotency + dedupe set |
+
+---
+
+## 📊 Observability
+
+Metrics:
+- `collab_ops_in_total{type}` / `collab_ops_out_total{type}`
+- `collab_op_latency_ms` (p50/p95/p99)
+- `ws_connections_active`, `ws_reconnect_total`
+- `doc_snapshot_age_seconds`, `oplog_lag_seconds`
+
+Logs/Tracing:
+- Trace per op: `receive → validate → transform/merge → persist → publish`
+- Log `doc_id`, `user_id` (hashed), `op_id`, `server_seq`, `client_seq`
+
+---
+
+## 💡 Phase 6: Interview Tips
+
+**Key insight**: Đây là bài về distributed systems, không phải về text editing.
+
+**Red flags**:
+❌ "Just lock the document" - defeats purpose  
+❌ "Last write wins" - loses data  
+❌ Not considering network partition  
+
+### 🔄 Presence & Cursor Synchronization
+
+```python
+class PresenceManager:
+    """
+    Real-time presence tracking for collaborative editing.
+    Show who's online and where their cursor is.
+    """
+    
+    def __init__(self, redis, document_id):
+        self.redis = redis
+        self.doc_id = document_id
+        self.presence_key = f"presence:{document_id}"
+        self.cursor_key = f"cursors:{document_id}"
+    
+    async def join(self, user_id, user_info):
+        """User opens document."""
+        await self.redis.hset(
+            self.presence_key,
+            user_id,
+            json.dumps({
+                'user_id': user_id,
+                'name': user_info['name'],
+                'color': self._assign_color(user_id),
+                'joined_at': time.time()
+            })
+        )
+        await self.redis.expire(self.presence_key, 3600)
+        
+        # Broadcast to other users
+        await self._broadcast('user_joined', {'user_id': user_id})
+    
+    async def update_cursor(self, user_id, position):
+        """Update cursor position for user."""
+        await self.redis.hset(
+            self.cursor_key,
+            user_id,
+            json.dumps({
+                'position': position,
+                'updated_at': time.time()
+            })
+        )
+        
+        # Broadcast cursor update
+        await self._broadcast('cursor_moved', {
+            'user_id': user_id,
+            'position': position
+        })
+    
+    async def get_all_cursors(self):
+        """Get all active cursors for rendering."""
+        cursors = await self.redis.hgetall(self.cursor_key)
+        return {
+            user_id: json.loads(data) 
+            for user_id, data in cursors.items()
+        }
+```
+
+### ⚠️ Conflict Resolution Edge Cases
+
+| Scenario | Problem | Solution |
+|----------|---------|----------|
+| **Same position, same time** | Whose edit wins? | Deterministic tie-breaking (lower node_id first) |
+| **Delete + Edit same range** | Edit lost? | Transform delete around edit |
+| **Undo with concurrent edits** | Undo what exactly? | Undo transforms against concurrent ops |
+| **Network partition heals** | Diverged documents | Merge with CRDT, or server rebases OT |
+| **High latency user** | Very stale view | Show "syncing" indicator, batch transforms |
+
+### 🌍 Real-World Case Study: Figma
+
+| Aspect | Figma's Approach | Learning |
+|--------|------------------|----------|
+| **Data model** | CRDT (custom implementation) | More scalable than OT for design tools |
+| **Multiplayer** | WebSocket + operational sync | Real-time with <100ms propagation |
+| **Presence** | Cursor colors, avatar on selection | Social presence = engagement |
+| **Offline** | Full offline editing, sync on reconnect | CRDT enables true offline-first |
+| **Versioning** | Automatic snapshots every 30min | Time travel for design history |
+
+**Key Takeaways:**
+1. **CRDT for complex data** - Better for non-linear structures like designs
+2. **Presence matters** - Seeing collaborators is half the experience
+3. **Offline-first design** - CRDT shines when network is unreliable
+4. **Server still useful** - Permissions, history, initial sync
+
+# 17. Commenting System
+
+> **Ví dụ thực tế**: WEBTOON comments, Facebook, Reddit
+
+## 🎯 Phase 1: Requirements
+
+- **FR1**: Post/edit/delete comments
+- **FR2**: Nested replies (threading)
+- **FR3**: Like/dislike
+- **FR4**: Real-time updates
+- **NFR1**: 500M comments/day write
+- **NFR2**: Content moderation
+
+### Clarifying Questions
+
+| Câu hỏi | Vì sao quan trọng | Giả định |
+|--------|--------------------|----------|
+| Consistency cho counts (like/reply)? | Denormalization vs realtime count | Eventual OK |
+| Sorting cần gì? newest/popular/relevant? | Index + precompute | Có cả 3 |
+| Thread depth tối đa? | UX + query complexity | Max 10 |
+| Edit window? | Anti-abuse + storage | 5 phút |
+| Real-time bắt buộc cho mọi content? | Chi phí WebSocket | Chỉ hot content |
+
+---
+
+## 📊 Phase 2: Capacity Estimation (5 phút)
+
+Giả sử:
+- 500M comments/day ≈ 5,800 writes/sec average
+- Peak 10x → ~58K writes/sec
+- Read QPS thường lớn hơn write (feed/timeline) → assume 10x reads
+
+Hệ quả:
+- Data model phải tối ưu **append writes** + **pagination reads**.
+- Hot content cần cache + fanout/push có kiểm soát.
+
+---
+
+## 🏗️ Phase 3: High-Level Design
+
+```
+┌──────────┐   ┌──────────────┐   ┌──────────────────────┐
+│ Clients  │──▶│ API Gateway    │──▶│ Comment Service       │
+└──────────┘   │ (auth, rate)   │   │ (write/read APIs)     │
+         └──────┬────────┘   └──────────┬───────────┘
+             │                       │
+             │                       ├──────────────┐
+             ▼                       ▼              ▼
+         ┌──────────────┐      ┌──────────────┐  ┌──────────────┐
+         │ Redis Cache   │      │ Primary DB    │  │ Search/Rank   │
+         │ (hot threads) │      │ (writes)      │  │ (ES/feature)  │
+         └──────────────┘      └──────────────┘  └──────────────┘
+                            │
+                            ▼
+                        ┌──────────────┐
+                        │ Replicas      │
+                        │ (reads)       │
+                        └──────────────┘
+
+Async:
+- Moderation pipeline (rules + ML)
+- Notifications (replies, mentions)
+- Analytics stream (Kafka)
+```
+
+> 💡 Design split: write path tối ưu cho throughput; read path tối ưu cho UX (cache + precompute).
+
+---
+
+## Deep Reading Notes (Q17)
+
+- Hot path (write): validate/rate limit → write comment (append) → emit event (Kafka) → async: moderation, counters, notifications.
+- Hot path (read): check cache page-1 → DB/query + rank → return + cache.
+- Invariants:
+    - No duplicate reactions: `(comment_id, user_id)` unique.
+    - Soft delete rules: deleted comments không “biến mất” làm hỏng thread shape.
+    - Moderation state machine rõ ràng (visible/pending/hidden/deleted).
+- 3 trade-offs:
+    - Fan-out on write (WS push) vs pull (polling): realtime UX vs write amplification.
+    - Materialized path vs adjacency list: read simplicity vs update complexity.
+    - Sync moderation vs async moderation: safety vs latency.
+- Failure drills:
+    - Moderation service down 30 phút: bạn chuyển sang chế độ nào để giảm spam?
+    - Hot post 10M viewers: bạn cache/rate-limit/paginate thế nào để DB không chết?
+
+## 🔬 Phase 4: Deep Dive
+
+### 4.0 API Contract + Data Model (để bài “sâu” như Q12)
+
+**Core APIs** (tối thiểu đủ interview):
+
+```http
+POST /contents/{content_id}/comments
+GET  /contents/{content_id}/comments?sort=newest&limit=50&cursor=...
+POST /comments/{comment_id}/reactions
+DELETE /comments/{comment_id}
+```
+
+**Pagination**: dùng cursor-based (đừng offset cho hot threads).
+- Cursor có thể encode `(created_at, comment_id)` hoặc `(rank_score, comment_id)` tuỳ sort.
+
+**Schema (Postgres example)**:
+
+```sql
+CREATE TABLE comments (
+    comment_id BIGSERIAL PRIMARY KEY,
+    content_id BIGINT NOT NULL,
+    user_id BIGINT NOT NULL,
+    parent_id BIGINT,
+    path TEXT,                              -- materialized path (optional)
+    body TEXT NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'VISIBLE',  -- VISIBLE/PENDING/HIDDEN/DELETED
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_comments_content_created ON comments (content_id, created_at DESC, comment_id DESC);
+CREATE INDEX idx_comments_parent ON comments (content_id, parent_id, created_at DESC);
+CREATE INDEX idx_comments_path_prefix ON comments (content_id, path);
+
+CREATE TABLE comment_reactions (
+    comment_id BIGINT NOT NULL,
+    user_id BIGINT NOT NULL,
+    reaction VARCHAR(16) NOT NULL,          -- like/dislike/etc.
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (comment_id, user_id)
+);
+
+-- Denormalized counters (avoid COUNT(*) on hot paths)
+CREATE TABLE comment_counters (
+    comment_id BIGINT PRIMARY KEY,
+    reply_count BIGINT NOT NULL DEFAULT 0,
+    like_count BIGINT NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+```
+
+**Cursor query (newest)**:
+
+```sql
+SELECT *
+FROM comments
+WHERE content_id = $1
+    AND status IN ('VISIBLE','PENDING')
+    AND (created_at, comment_id) < ($2, $3)  -- cursor
+ORDER BY created_at DESC, comment_id DESC
+LIMIT $4;
+```
+
+### 4.1 Threading Model
+
+```
+Approach 1: Adjacency List
+comment_id | parent_id | content
+1          | NULL      | "Great episode!"
+2          | 1         | "I agree"
+3          | 1         | "Same here"
+4          | 2         | "Me too"
+
+Pros: Simple
+Cons: N+1 queries to build tree
+
+Approach 2: Materialized Path
+comment_id | path        | content
+1          | "1"         | "Great episode!"
+2          | "1.2"       | "I agree"
+3          | "1.3"       | "Same here"
+4          | "1.2.4"     | "Me too"
+
+Query all replies: WHERE path LIKE '1.%'
+Pros: Single query
+Cons: Path length limit, update complexity
+```
+
+### 4.2 Fan-out cho Hot Content
+
+```
+Popular WEBTOON episode:
+- 10M readers
+- 100K comments in 1 hour
+
+Problem: All 10M users polling for new comments = 10M QPS!
+
+Solution: Fan-out on write
+1. New comment posted
+2. Push to all active WebSocket connections
+3. Cache recent comments in Redis
+4. Lazy load older comments
+
+Trade-off:
+- Hot content: Push (real-time but high write amplification)
+- Cold content: Pull (on-demand, lower cost)
+```
+
+### 4.3 Content Moderation
+
+```python
+class ModerationPipeline:
+    """
+    Multi-stage moderation:
+    1. Keyword filter (fast, sync)
+    2. ML model (medium, async)
+    3. Human review (slow, for edge cases)
+    """
+    
+    async def moderate(self, comment):
+        # Stage 1: Blocklist check (sync, <1ms)
+        if self.contains_blocked_words(comment.text):
+            return ModResult.BLOCK_IMMEDIATELY
+        
+        # Stage 2: Spam detection (sync, <10ms)
+        spam_score = self.spam_classifier.predict(comment.text)
+        if spam_score > 0.9:
+            return ModResult.BLOCK_IMMEDIATELY
+        
+        # Stage 3: ML toxicity (async, ~100ms)
+        # Comment goes live, checked in background
+        asyncio.create_task(self.async_ml_check(comment))
+        
+        return ModResult.ALLOW_PENDING_REVIEW
+```
+
+### 🗄️ Comments Database Schema
+
+```sql
+-- Comments with threading support
+CREATE TABLE comments (
+    id BIGSERIAL PRIMARY KEY,
+    content_id VARCHAR(100) NOT NULL,      -- What this comment is on
+    content_type VARCHAR(50) NOT NULL,     -- 'webtoon_episode', 'article', 'video'
+    
+    -- Threading
+    parent_id BIGINT REFERENCES comments(id),
+    root_id BIGINT,                        -- Top-level comment for this thread
+    path LTREE,                            -- Materialized path: '1.2.4'
+    depth INT NOT NULL DEFAULT 0,
+    
+    -- Content
+    author_id BIGINT NOT NULL,
+    body TEXT NOT NULL,
+    body_html TEXT,                        -- Pre-rendered for display
+    
+    -- Engagement
+    like_count INT DEFAULT 0,
+    dislike_count INT DEFAULT 0,
+    reply_count INT DEFAULT 0,
+    
+    -- Moderation
+    status VARCHAR(20) DEFAULT 'visible',  -- visible, hidden, deleted, pending
+    moderation_score FLOAT,
+    moderated_at TIMESTAMP,
+    moderated_by VARCHAR(100),
+    
+    -- Timestamps
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    deleted_at TIMESTAMP,
+    
+    -- Soft delete
+    is_deleted BOOLEAN DEFAULT FALSE
+);
+
+-- Index for fetching comments on content
+CREATE INDEX idx_comments_content ON comments (content_type, content_id, created_at DESC);
+
+-- Index for threading queries
+CREATE INDEX idx_comments_path ON comments USING GIST (path);
+
+-- Index for author's comments
+CREATE INDEX idx_comments_author ON comments (author_id, created_at DESC);
+
+-- Comment reactions
+CREATE TABLE comment_reactions (
+    comment_id BIGINT NOT NULL REFERENCES comments(id),
+    user_id BIGINT NOT NULL,
+    reaction_type VARCHAR(10) NOT NULL,    -- 'like', 'dislike'
+    created_at TIMESTAMP DEFAULT NOW(),
+    
+    PRIMARY KEY (comment_id, user_id)
+);
+```
+
+### 📱 Notification Patterns
+
+```python
+class CommentNotificationService:
+    """
+    Notification strategy for comments:
+    - Reply to your comment → Push notification
+    - Comment on your content → Batched digest
+    - Trending discussion → Optional notification
+    """
+    
+    async def on_new_comment(self, comment):
+        # 1. Notify parent comment author (high priority)
+        if comment.parent_id:
+            parent = await self.get_comment(comment.parent_id)
+            if parent.author_id != comment.author_id:
+                await self.push_realtime(
+                    user_id=parent.author_id,
+                    type='reply',
+                    data={'comment_id': comment.id}
+                )
+        
+        # 2. Notify content owner (batch)
+        content = await self.get_content(comment.content_id)
+        if content.author_id != comment.author_id:
+            await self.queue_batch_notification(
+                user_id=content.author_id,
+                type='new_comment',
+                data={'content_id': comment.content_id}
+            )
+        
+        # 3. Check if this starts a viral thread
+        if await self.is_trending_thread(comment.root_id):
+            await self.notify_thread_participants(
+                thread_id=comment.root_id,
+                exclude=[comment.author_id]
+            )
+```
+
+---
+
+## 📈 Phase 5: Scaling, Reliability, Performance
+
+### Sharding
+
+- Partition/shard by `content_id` (hoặc `content_type + content_id`) để tránh cross-partition reads.
+- Hot content: cache “page 1” (top N newest/popular) trong Redis.
+
+### Hot thread handling
+
+- WebSocket chỉ bật cho hot content (threshold theo active viewers).
+- Nếu không hot: polling 15–30s hoặc long-polling để giảm chi phí.
+
+### Like/dislike correctness
+
+- Prevent double-like: unique `(comment_id, user_id)` trong `comment_reactions`.
+- Update counters bằng async aggregation (event stream) hoặc transactional update (tốn hơn).
+
+### Failure scenarios
+
+| Failure | Impact | Mitigation |
+|---------|--------|------------|
+| Moderation service down | spam lọt | degrade: strict rule-based, quarantine mode |
+| Cache stampede | DB overload | singleflight/locks, stale-while-revalidate |
+| Hot partition | p99 tăng | split cache keys, multi-replica reads |
+
+---
+
+## 📊 Observability
+
+Metrics:
+- `comments_created_total`, `comments_deleted_total`
+- `comment_read_latency_ms` (p95/p99)
+- `moderation_blocked_total`, `spam_detected_total`
+- `cache_hit_rate{region}`
+
+### 🌍 Real-World Case Study: Reddit
+
+| Aspect | Reddit's Approach | Learning |
+|--------|-------------------|----------|
+| **Threading** | Infinite nesting | Limit depth for UX (max 10 levels) |
+| **Voting** | Up/down affects visibility | Downvoting hides low-quality content |
+| **Moderation** | Community mods + AutoMod | AI assists, humans decide edge cases |
+| **Load** | Hot posts = millions of comments | Pagination + lazy load essential |
+| **Real-time** | Polling, not WebSocket | Simpler at scale, ~30s delay acceptable |
+
+**Key Takeaways:**
+1. **Materialized path for threading** - Single query to fetch all replies
+2. **Denormalize counts** - Don't COUNT(*) on every page load
+3. **Tiered moderation** - Fast blocklist, medium ML, slow human
+4. **Accept some delay** - Real-time not always necessary
+
+# 18. Location-Based Service
+
+> **Ví dụ thực tế**: NAVER Maps, Uber, Tinder
+
+## 🎯 Phase 1: Understand the Problem
+
+### Requirements
+- **FR1**: Nearby search (POI) theo vị trí hiện tại
+- **FR2**: Text search ("cafe near me") + filters
+- **FR3**: Routing/ETA (optional trong interview tuỳ scope)
+- **FR4**: Map tiles delivery
+- **NFR1**: p99 latency thấp (nearby/search)
+- **NFR2**: Geo-distribution + high availability
+
+### Clarifying Questions
+
+| Câu hỏi | Vì sao quan trọng | Giả định |
+|--------|--------------------|----------|
+| Use case chính: search POI hay routing? | Routing phức tạp hơn nhiều | POI search + basic routing |
+| Real-time updates (traffic/vehicle)? | Streaming + TTL | Có traffic feed |
+| Accuracy yêu cầu? | Geohash vs PostGIS | PostGIS for accuracy |
+| Data source POI update frequency? | Ingestion pipeline | Daily + incremental |
+
+---
+
+## 📊 Phase 2: Capacity Estimation (5 phút)
+
+Giả sử:
+- 1B queries/day → ~11.6K QPS avg, peak 3x → ~35K QPS
+- POI records: 200M
+- Tile requests thường cao hơn search (map pan/zoom) → cache/CDN là bắt buộc
+
+Hệ quả:
+- Split control plane (ingestion/update) và data plane (serving/search).
+- Heavy caching cho tiles + popular queries.
+
+---
+
+## 🏗️ Phase 3: High-Level Design
+
+```
+┌──────────┐   ┌───────────────┐
+│ Clients  │──▶│ CDN (map tiles)│
+└────┬─────┘   └──────┬────────┘
+    │                 │ (tile hit)
+    │ (search/routing)│
+    ▼                 ▼
+┌──────────────┐   ┌──────────────────┐
+│ API Gateway   │──▶│ Location Service  │──┐
+│ + rate limit  │   │ (nearby/bbox)     │  │
+└──────────────┘   └──────────────────┘  │
+                                 │
+                                 ▼
+                          ┌──────────────────┐
+                          │ PostGIS / Geo DB  │
+                          │ (spatial index)   │
+                          └──────────────────┘
+
+Optional:
+- Text search: Elasticsearch (name/address)
+- Routing: graph store + precomputed edges
+- Traffic: Kafka stream → cache factors
+```
+
+## Deep Reading Notes (Q18)
+
+- Hot path (nearby): request → normalize lat/lon + filters → pick candidate cells (geohash/H3) → PostGIS `ST_DWithin` / bbox query → rank → paginate.
+- Hot path (tiles): client → CDN (hit) → origin tile render only on miss.
+- Invariants:
+    - Spatial correctness: SRID/units đúng (meters vs degrees), radius semantics consistent.
+    - Privacy: location retention (TTL), access control, avoid logging raw coordinates in app logs.
+    - Pagination stability: tránh duplicate/skip khi dữ liệu update (cursor + deterministic sort).
+- Trade-offs:
+    - Geohash prefilter + PostGIS refine vs PostGIS-only: throughput vs simplicity.
+    - Cache TTL ngắn vs dài: freshness vs hit rate.
+    - Single geo DB vs geo-shard: vận hành đơn giản vs latency theo region.
+- Failure drills:
+    - Traffic feed trễ 10 phút: degrade ETA/routing như thế nào (fallback historical, label stale)?
+    - Downtown dense hotspot: giới hạn candidate set, top-K ranking, chống timeout.
+
+## 🔬 Phase 4: Deep Dive
+
+### 4.0 API Contract + Query Pattern (điểm để bài “sâu”)
+
+**Serving APIs** (core):
+
+```http
+GET /nearby?lat=37.56&lon=126.97&radius_m=1000&category=cafe&limit=50&cursor=...
+GET /search?q=cafe%20near%20me&lat=...&lon=...&filters=...&limit=50&cursor=...
+GET /tiles/{z}/{x}/{y}.png
+```
+
+**Cursor**: tương tự Q17, cursor-based để ổn định và chống hot-page.
+
+**PostGIS query pattern** (bbox prefilter + exact distance):
+
+```sql
+-- 1) Pre-filter bằng bounding box để tận dụng index tốt
+-- 2) Refine bằng ST_DWithin (geography, meters)
+-- 3) Order by distance (KNN nếu cần)
+
+WITH q AS (
+    SELECT
+        ST_SetSRID(ST_MakePoint($lon, $lat), 4326)::geography AS p,
+        $radius_m::double precision AS r
+)
+SELECT
+    place_id,
+    name,
+    ST_Distance(location, q.p) AS distance_m
+FROM places, q
+WHERE
+    location && ST_Expand(q.p::geometry, q.r / 111320.0)   -- approx deg expansion
+    AND ST_DWithin(location, q.p, q.r)
+ORDER BY distance_m ASC
+LIMIT $limit;
+```
+
+**Tile caching key** (CDN/origin):
+- `tile:{style}:{z}:{x}:{y}:{version}`
+- Versioning cực quan trọng để invalidate khi style/data đổi.
+
+### 4.1 Geohash
+
+**Concept**: Encode lat/long into string → nearby locations have similar prefix
+
+```
+Seoul Station: 37.5563, 126.9723
+Geohash: "wydm9"
+
+wydm = Seoul area
+wydm9 = Smaller area around Seoul Station
+wydm9q = Even smaller (few blocks)
+
+Nearby search: SELECT * FROM places 
+               WHERE geohash LIKE 'wydm9%'
+```
+
+```python
+def get_nearby_places(lat, lon, radius_km):
+    """
+    Use geohash for efficient spatial query.
+    
+    Precision map:
+    - 4 chars: ~20km
+    - 5 chars: ~2.4km
+    - 6 chars: ~610m
+    - 7 chars: ~76m
+    """
+    precision = calculate_precision(radius_km)
+    center_hash = geohash.encode(lat, lon, precision)
+    
+    # Get neighboring geohashes (handles edge cases)
+    neighbors = geohash.neighbors(center_hash)
+    all_hashes = [center_hash] + neighbors
+    
+    # Query with IN clause
+    results = db.query(
+        "SELECT * FROM places WHERE geohash IN (?)",
+        all_hashes
+    )
+    
+    # Post-filter by exact distance
+    return [p for p in results if haversine(lat, lon, p.lat, p.lon) <= radius_km]
+```
+
+### 4.2 Quadtree vs Geohash
+
+| Feature | Geohash | Quadtree |
+|---------|---------|----------|
+| **Implementation** | String prefix | Tree structure |
+| **Range query** | LIKE 'abc%' | Traverse tree |
+| **Update** | O(1) | O(log n) |
+| **Best for** | Database index | In-memory |
+
+### 🗄️ Location Database Schema (PostGIS)
+
+```sql
+-- PostGIS for spatial queries
 CREATE EXTENSION IF NOT EXISTS postgis;
 
--- POI table with spatial index
-CREATE TABLE pois (
-    poi_id UUID PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,
-    category VARCHAR(50),
-    location GEOGRAPHY(POINT, 4326),
-    address TEXT,
-    phone VARCHAR(20),
-    rating DECIMAL(2,1),
-    review_count INT DEFAULT 0,
-    price_level INT,
+CREATE TABLE places (
+    id BIGSERIAL PRIMARY KEY,
+    name VARCHAR(200) NOT NULL,
+    category VARCHAR(50) NOT NULL,        -- restaurant, cafe, gas_station
+    
+    -- Spatial data
+    location GEOGRAPHY(POINT, 4326) NOT NULL,  -- Native geo type
+    geohash VARCHAR(12) NOT NULL,              -- For simple queries
+    
+    -- Address
+    address VARCHAR(500),
+    city VARCHAR(100),
+    country CHAR(2),
+    
+    -- Metadata
+    rating FLOAT,
+    rating_count INT DEFAULT 0,
+    price_level INT,                       -- 1-4 ($-$$$$)
+    
+    -- Hours (JSON for flexibility)
     opening_hours JSONB,
-    photos TEXT[],
-    tags TEXT[],
+    
+    -- Status
+    is_verified BOOLEAN DEFAULT FALSE,
+    is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
 );
 
--- Spatial index for fast geo queries
-CREATE INDEX idx_pois_location ON pois USING GIST(location);
-CREATE INDEX idx_pois_category ON pois(category);
-CREATE INDEX idx_pois_rating ON pois(rating DESC);
+-- PostGIS spatial index (most important!)
+CREATE INDEX idx_places_location ON places USING GIST (location);
 
--- Road network for routing
-CREATE TABLE road_segments (
-    segment_id UUID PRIMARY KEY,
-    name VARCHAR(255),
-    road_class VARCHAR(20),  -- highway, primary, secondary, residential
-    start_point GEOGRAPHY(POINT, 4326),
-    end_point GEOGRAPHY(POINT, 4326),
-    geometry GEOGRAPHY(LINESTRING, 4326),
-    length_meters FLOAT,
-    speed_limit INT,
-    one_way BOOLEAN DEFAULT FALSE,
-    traffic_factor FLOAT DEFAULT 1.0
-);
+-- Geohash index for simpler queries
+CREATE INDEX idx_places_geohash ON places (geohash varchar_pattern_ops);
 
-CREATE INDEX idx_roads_geometry ON road_segments USING GIST(geometry);
+-- Category + location for filtered spatial queries
+CREATE INDEX idx_places_category ON places (category);
 ```
 
-**3. Location Service**
-
-```python
-from fastapi import FastAPI
-import asyncpg
-from typing import List
-
-app = FastAPI()
-
-@app.get("/api/v1/search/nearby")
-async def search_nearby(
-    lat: float, 
-    lng: float, 
-    radius_m: int = 1000,
-    category: str = None,
-    limit: int = 20
-):
-    query = """
-        SELECT poi_id, name, category, 
-               ST_AsText(location) as location,
-               ST_Distance(location, ST_MakePoint($1, $2)::geography) as distance,
-               rating, review_count
-        FROM pois
-        WHERE ST_DWithin(location, ST_MakePoint($1, $2)::geography, $3)
-    """
-    
-    params = [lng, lat, radius_m]
-    
-    if category:
-        query += " AND category = $4"
-        params.append(category)
-    
-    query += " ORDER BY distance LIMIT $" + str(len(params) + 1)
-    params.append(limit)
-    
-    async with db_pool.acquire() as conn:
-        results = await conn.fetch(query, *params)
-    
-    return [dict(r) for r in results]
-
-@app.get("/api/v1/search/bbox")
-async def search_in_bbox(
-    min_lat: float,
-    min_lng: float, 
-    max_lat: float,
-    max_lng: float,
-    category: str = None
-):
-    query = """
-        SELECT poi_id, name, category, ST_AsText(location) as location
-        FROM pois
-        WHERE location && ST_MakeEnvelope($1, $2, $3, $4, 4326)
-    """
-    
-    if category:
-        query += " AND category = $5"
-        params = [min_lng, min_lat, max_lng, max_lat, category]
-    else:
-        params = [min_lng, min_lat, max_lng, max_lat]
-    
-    async with db_pool.acquire() as conn:
-        results = await conn.fetch(query, *params)
-    
-    return [dict(r) for r in results]
+```sql
+-- PostGIS nearby query (more accurate than geohash)
+SELECT id, name, category,
+       ST_Distance(
+           location,
+           ST_SetSRID(ST_MakePoint(126.9723, 37.5563), 4326)
+       ) as distance_meters
+FROM places
+WHERE ST_DWithin(
+    location,
+    ST_SetSRID(ST_MakePoint(126.9723, 37.5563), 4326),
+    2000  -- 2km radius
+)
+AND category = 'restaurant'
+AND is_active = TRUE
+ORDER BY distance_meters
+LIMIT 20;
 ```
 
-**4. Geohash-based Sharding**
+### ⚠️ Failure Scenarios & Handling
 
-```python
-import geohash2
+| Failure | Impact | Mitigation |
+|---------|--------|------------|
+| **GPS accuracy** | Wrong location | Use multiple data sources (GPS, WiFi, cell towers) |
+| **Stale location** | Show incorrect nearby | TTL on location cache, prompt refresh |
+| **High density area** | Too many results | Pagination + relevance ranking |
+| **Cross-boundary search** | Miss nearby locations | Query 9 geohash cells (neighbors) |
 
-class GeoShardManager:
-    def __init__(self, precision=4):
-        self.precision = precision  # 4 = ~39km x 20km cells
-        self.shards = {}
-    
-    def get_shard(self, lat: float, lng: float) -> str:
-        gh = geohash2.encode(lat, lng, precision=self.precision)
-        return f"geo_shard_{gh}"
-    
-    def get_shards_for_radius(self, lat: float, lng: float, radius_km: float) -> List[str]:
-        # Get center geohash
-        center_gh = geohash2.encode(lat, lng, precision=self.precision)
-        
-        # Get neighbors to cover radius
-        neighbors = geohash2.neighbors(center_gh)
-        all_hashes = [center_gh] + neighbors
-        
-        return [f"geo_shard_{gh}" for gh in all_hashes]
-    
-    def route_query(self, lat: float, lng: float, radius_km: float):
-        shards = self.get_shards_for_radius(lat, lng, radius_km)
-        
-        # Query all relevant shards in parallel
-        return shards
+### 🌍 Real-World Case Study: Uber
 
-# Usage
-shard_manager = GeoShardManager(precision=4)
-shards = shard_manager.get_shards_for_radius(37.5665, 126.9780, 5)  # Seoul
+| Aspect | Uber's Approach | Learning |
+|--------|------------------|----------|
+| **Matching** | H3 hexagonal grid | Better than geohash for uniform coverage |
+| **Real-time update** | Drivers update every 4 sec | Balance freshness vs cost |
+| **Surge pricing** | Per-hexagon demand tracking | Geospatial + time-series |
+| **ETA calculation** | Pre-computed road network | Graph algorithms (not straight-line) |
+| **Scale** | Millions of active drivers | Geosharding by region |
+
+**Key Takeaways:**
+1. **PostGIS for accuracy** - Native spatial types beat string tricks
+2. **Geohash for distribution** - Shard by geohash prefix for scale
+3. **Pre-compute what you can** - Road network, travel times
+4. **Accept approximations** - Perfect accuracy rarely needed
+
+---
+
+## 📈 Phase 5: Scaling, Caching, Multi-Region
+
+### Caching strategy
+
+- Tiles: CDN cache (days-weeks TTL), versioned URLs.
+- Nearby search: cache by `(geohash_prefix, category, filters)` TTL ngắn (30–120s).
+- Traffic factors: cache TTL rất ngắn (5–30s) tuỳ feed.
+
+### Sharding
+
+- Shard POI DB theo geohash prefix (region shards) để locality.
+- Read replicas theo region.
+
+### Failure modes
+
+| Failure | Impact | Mitigation |
+|---------|--------|------------|
+| DB overload | p99 tăng | cache + read replicas + query limits |
+| Traffic feed lag | ETA sai | stale-tolerant + fallback historical |
+| Region outage | mất khu vực | geo failover + warm standby |
+
+---
+
+## 📊 Observability
+
+Metrics:
+- `geo_search_latency_ms` (p95/p99)
+- `tiles_cdn_hit_rate`
+- `postgis_query_time_ms` + slow query log
+- `traffic_feed_lag_seconds`
+
+---
+
+# 19. Ad Serving System
+
+> **Ví dụ thực tế**: Google Ads, Facebook Ads
+
+## 🎯 Phase 1: Key Insight
+
+**Ad serving = Real-time auction running 1B times/day**
+
+Flow:
+1. User loads page
+2. Ad request sent (user context, page context)
+3. Auction among advertisers (<50ms total)
+4. Winner's ad displayed
+5. Track impression, click, conversion
+
+### Requirements
+- **FR1**: Serve ad with low latency (<50ms p99)
+- **FR2**: Targeting (geo, device, interests, context)
+- **FR3**: Auction (RTB / internal) + pricing
+- **FR4**: Budget pacing + frequency capping
+- **FR5**: Measurement (impression/click/conversion)
+- **NFR1**: High availability + fraud resistance
+
+### Clarifying Questions
+
+| Câu hỏi | Vì sao quan trọng | Giả định |
+|--------|--------------------|----------|
+| Auction type? (2nd price, 1st price) | Pricing + incentives | GSP/2nd price |
+| Latency budget breakdown? | DSP timeout, cache strategy | 50ms end-to-end |
+| Frequency cap scope? | storage per user | per user + per campaign |
+| Attribution model? | reporting + pipeline | last-click + optional DDA |
+
+---
+
+## 📊 Phase 2: Capacity Estimation (5 phút)
+
+Giả sử:
+- 1B impressions/day → ~11.6K RPS avg, peak 3x → ~35K RPS
+- Mỗi request cần lookup user segment + eligible campaigns
+
+Hệ quả:
+- Eligibility + ranking phải nằm trong memory/cache.
+- Analytics ingestion phải async (Kafka) để không ảnh hưởng serving.
+
+---
+
+## 🏗️ Phase 3: High-Level Design
+
 ```
+┌──────────┐   ┌──────────────┐   ┌──────────────────────┐
+│ Publisher│──▶│ Ad Gateway     │──▶│ Ad Server             │
+│ Page/App │   │ (auth, rate)   │   │ (eligibility+auction) │
+└──────────┘   └──────┬───────┘   └──────────┬───────────┘
+             │                       │
+             │                       ├──────────────┐
+             ▼                       ▼              ▼
+         ┌──────────────┐      ┌──────────────┐  ┌──────────────┐
+         │ User Profile  │      │ Campaign Cache│  │ Fraud Service │
+         │ / Segments    │      │ (in-memory)   │  │ (rules+ML)    │
+         └──────────────┘      └──────────────┘  └──────────────┘
+             │                       │
+             └──────────────┬────────┘
+                      ▼
+                ┌──────────────────┐
+                │ Creative Store    │
+                │ (CDN + assets)    │
+                └──────────────────┘
 
-**5. Routing Service (Dijkstra/A*)**
-
-```python
-import heapq
-from typing import Dict, Tuple
-
-class RoutingEngine:
-    def __init__(self):
-        self.graph = {}  # node_id -> [(neighbor_id, distance, road_segment)]
-    
-    def load_road_network(self, road_segments):
-        for segment in road_segments:
-            start = segment['start_node']
-            end = segment['end_node']
-            weight = segment['length_meters'] / (segment['speed_limit'] * segment['traffic_factor'])
-            
-            if start not in self.graph:
-                self.graph[start] = []
-            self.graph[start].append((end, weight, segment['segment_id']))
-            
-            if not segment['one_way']:
-                if end not in self.graph:
-                    self.graph[end] = []
-                self.graph[end].append((start, weight, segment['segment_id']))
-    
-    def find_route(self, start_node: str, end_node: str) -> dict:
-        # A* algorithm
-        distances = {start_node: 0}
-        previous = {}
-        segments_used = {}
-        
-        pq = [(0, start_node)]
-        visited = set()
-        
-        while pq:
-            current_dist, current = heapq.heappop(pq)
-            
-            if current in visited:
-                continue
-            
-            visited.add(current)
-            
-            if current == end_node:
-                break
-            
-            for neighbor, weight, segment_id in self.graph.get(current, []):
-                if neighbor in visited:
-                    continue
-                
-                distance = current_dist + weight
-                
-                if neighbor not in distances or distance < distances[neighbor]:
-                    distances[neighbor] = distance
-                    previous[neighbor] = current
-                    segments_used[neighbor] = segment_id
-                    
-                    # A* heuristic
-                    priority = distance + self.heuristic(neighbor, end_node)
-                    heapq.heappush(pq, (priority, neighbor))
-        
-        # Reconstruct path
-        path = []
-        current = end_node
-        while current in previous:
-            path.append(segments_used[current])
-            current = previous[current]
-        
-        path.reverse()
-        
-        return {
-            'segments': path,
-            'total_time': distances.get(end_node, float('inf')),
-            'distance': sum(self.get_segment_length(s) for s in path)
-        }
-    
-    def heuristic(self, node1: str, node2: str) -> float:
-        # Haversine distance as heuristic
-        lat1, lng1 = self.get_node_coords(node1)
-        lat2, lng2 = self.get_node_coords(node2)
-        return haversine_distance(lat1, lng1, lat2, lng2) / 100  # Assume 100 km/h max
-```
-
-**6. Real-time Traffic Integration**
-
-```python
-from kafka import KafkaConsumer
-import asyncio
-
-class TrafficService:
-    def __init__(self):
-        self.traffic_data = {}  # segment_id -> traffic_factor
-        self.consumer = KafkaConsumer(
-            'traffic_updates',
-            bootstrap_servers=['kafka:9092'],
-            value_deserializer=lambda x: json.loads(x.decode('utf-8'))
-        )
-    
-    async def start_consuming(self):
-        for message in self.consumer:
-            data = message.value
-            segment_id = data['segment_id']
-            
-            # Update traffic factor based on speed vs speed limit
-            current_speed = data['avg_speed']
-            speed_limit = data['speed_limit']
-            
-            traffic_factor = min(current_speed / speed_limit, 1.0)
-            self.traffic_data[segment_id] = traffic_factor
-            
-            # Update routing graph
-            await routing_engine.update_traffic(segment_id, traffic_factor)
-    
-    def get_traffic_factor(self, segment_id: str) -> float:
-        return self.traffic_data.get(segment_id, 1.0)
-    
-    def get_traffic_conditions(self, bbox: BoundingBox) -> List[dict]:
-        # Return traffic conditions for map visualization
-        conditions = []
-        
-        for segment_id, factor in self.traffic_data.items():
-            segment = get_segment(segment_id)
-            if is_in_bbox(segment, bbox):
-                conditions.append({
-                    'segment_id': segment_id,
-                    'traffic_level': self.classify_traffic(factor),
-                    'factor': factor
-                })
-        
-        return conditions
-    
-    def classify_traffic(self, factor: float) -> str:
-        if factor >= 0.8:
-            return 'free_flow'
-        elif factor >= 0.5:
-            return 'moderate'
-        elif factor >= 0.3:
-            return 'heavy'
-        else:
-            return 'congested'
-```
-
-**7. Map Tile Service**
-
-```python
-import math
-
-class TileServer:
-    def __init__(self, tile_storage):
-        self.storage = tile_storage
-    
-    def lat_lng_to_tile(self, lat: float, lng: float, zoom: int) -> Tuple[int, int]:
-        n = 2 ** zoom
-        x = int((lng + 180) / 360 * n)
-        lat_rad = math.radians(lat)
-        y = int((1 - math.log(math.tan(lat_rad) + 1/math.cos(lat_rad)) / math.pi) / 2 * n)
-        return x, y
-    
-    async def get_tile(self, z: int, x: int, y: int, style: str = 'default'):
-        # Check cache first
-        cache_key = f"tile:{style}:{z}:{x}:{y}"
-        cached = await redis_client.get(cache_key)
-        if cached:
-            return cached
-        
-        # Generate or fetch tile
-        tile = await self.generate_tile(z, x, y, style)
-        
-        # Cache for 24 hours
-        await redis_client.setex(cache_key, 86400, tile)
-        
-        return tile
-    
-    async def generate_tile(self, z: int, x: int, y: int, style: str):
-        # Get bounding box for tile
-        bbox = self.tile_to_bbox(z, x, y)
-        
-        # Fetch features in bbox
-        features = await self.fetch_features(bbox, z)
-        
-        # Render to PNG/Vector
-        if style == 'vector':
-            return self.render_vector_tile(features)
-        else:
-            return self.render_raster_tile(features, style)
-```
-
-**8. POI Search with Elasticsearch**
-
-```python
-from elasticsearch import AsyncElasticsearch
-
-es = AsyncElasticsearch(['http://elasticsearch:9200'])
-
-async def search_pois(
-    query: str,
-    lat: float = None,
-    lng: float = None,
-    radius_km: float = None,
-    categories: List[str] = None
-) -> List[dict]:
-    
-    body = {
-        "query": {
-            "bool": {
-                "must": [
-                    {
-                        "multi_match": {
-                            "query": query,
-                            "fields": ["name^3", "address", "tags"]
-                        }
-                    }
-                ],
-                "filter": []
-            }
-        }
-    }
-    
-    # Add geo filter if location provided
-    if lat and lng:
-        geo_filter = {
-            "geo_distance": {
-                "distance": f"{radius_km or 10}km",
-                "location": {"lat": lat, "lon": lng}
-            }
-        }
-        body["query"]["bool"]["filter"].append(geo_filter)
-        
-        # Add distance scoring
-        body["sort"] = [
-            {
-                "_geo_distance": {
-                    "location": {"lat": lat, "lon": lng},
-                    "order": "asc",
-                    "unit": "km"
-                }
-            },
-            {"_score": "desc"}
-        ]
-    
-    # Add category filter
-    if categories:
-        body["query"]["bool"]["filter"].append({
-            "terms": {"category": categories}
-        })
-    
-    result = await es.search(index="pois", body=body, size=20)
-    
-    return [hit["_source"] for hit in result["hits"]["hits"]]
-```
-
-**9. Privacy & Anonymization**
-
-```python
-import hashlib
-from datetime import datetime
-
-class LocationPrivacy:
-    def __init__(self):
-        self.noise_factor = 0.001  # ~100m noise
-    
-    def anonymize_location(self, lat: float, lng: float, user_id: str) -> Tuple[float, float]:
-        # Add deterministic noise based on user hash
-        user_hash = hashlib.md5(user_id.encode()).hexdigest()
-        noise_lat = (int(user_hash[:8], 16) / 2**32 - 0.5) * self.noise_factor
-        noise_lng = (int(user_hash[8:16], 16) / 2**32 - 0.5) * self.noise_factor
-        
-        return lat + noise_lat, lng + noise_lng
-    
-    def aggregate_location_data(self, locations: List[dict], grid_size: float = 0.01):
-        # K-anonymity through aggregation
-        grid = {}
-        
-        for loc in locations:
-            grid_key = (
-                round(loc['lat'] / grid_size) * grid_size,
-                round(loc['lng'] / grid_size) * grid_size
-            )
-            
-            if grid_key not in grid:
-                grid[grid_key] = 0
-            grid[grid_key] += 1
-        
-        # Only return cells with k >= 5 users
-        return {k: v for k, v in grid.items() if v >= 5}
-    
-    def should_store_history(self, user_id: str) -> bool:
-        # Check user privacy settings
-        settings = get_user_privacy_settings(user_id)
-        return settings.get('location_history_enabled', False)
-```
-
-**10. Caching & Performance**
-
-```python
-class LocationCache:
-    def __init__(self):
-        self.redis = redis.Redis()
-        self.local_cache = {}  # L1 cache
-    
-    async def get_nearby_cached(self, lat: float, lng: float, radius: int):
-        # Round to cache grid
-        cache_lat = round(lat, 3)
-        cache_lng = round(lng, 3)
-        cache_key = f"nearby:{cache_lat}:{cache_lng}:{radius}"
-        
-        # L1 check
-        if cache_key in self.local_cache:
-            return self.local_cache[cache_key]
-        
-        # L2 check
-        cached = self.redis.get(cache_key)
-        if cached:
-            data = json.loads(cached)
-            self.local_cache[cache_key] = data
-            return data
-        
-        return None
-    
-    async def cache_nearby(self, lat: float, lng: float, radius: int, data: List[dict]):
-        cache_lat = round(lat, 3)
-        cache_lng = round(lng, 3)
-        cache_key = f"nearby:{cache_lat}:{cache_lng}:{radius}"
-        
-        # Store in both L1 and L2
-        self.local_cache[cache_key] = data
-        self.redis.setex(cache_key, 300, json.dumps(data))  # 5 min TTL
-    
-    async def invalidate_area(self, lat: float, lng: float, radius_km: float):
-        # Invalidate all cache keys in affected area
-        pattern = f"nearby:{round(lat, 2)}*:{round(lng, 2)}*"
-        keys = self.redis.keys(pattern)
-        
-        if keys:
-            self.redis.delete(*keys)
+Async pipeline:
+- Kafka events (impression/click/conversion) → stream/batch analytics
+- Budget pacing updates → push to caches
 ```
 
 ---
 
-## 19. Design an Ad Serving System (NAVER Ads)
+## Deep Reading Notes (Q19)
 
-### Requirements
-- 300 triệu users
-- 1 tỷ impressions/ngày
-- Real-time bidding (RTB)
-- Targeting (demographics, interests, context)
-- Low latency (<50ms)
-- Analytics & fraud prevention
+- Hot path: request → fetch user/context signals (cache) → compute eligible set → apply frequency cap → auction/rank → pick creative → respond (all within ~50ms).
+- Latency budget idea: split (gateway + signals + auction + creative fetch). Anything that can’t fit must be precomputed/cached.
+- Invariants:
+    - Budget never overspends beyond defined tolerance (especially under retries/timeouts).
+    - Frequency cap correctness per user (dedupe impressions, handle multi-device if required).
+    - Auction determinism enough for debugging (log winning reasons safely).
+- Trade-offs:
+    - 2nd-price vs 1st-price: simplicity/incentives vs revenue predictability.
+    - Strongly consistent pacing counters vs eventual: spend accuracy vs serving latency.
+    - On-request feature compute vs precomputed segments: freshness vs tail latency.
+- Failure drills:
+    - DSP/feature store timeout: fallback to contextual ads / house ads; enforce hard deadline.
+    - Cache stale budgets: how do you prevent runaway overspend (circuit breaker, lower caps)?
+    - Fraud spike: isolate suspicious traffic, degrade ML → rules, protect p99.
 
-### High-Level Architecture
+## 🔬 Phase 4: Deep Dive
 
+### 4.0 Core Data Model + Auction Algorithm (điểm ăn trong interview)
+
+Bạn sẽ được đánh giá cao nếu nói được “source of truth” của campaign/budget/targeting nằm ở đâu và serving dùng cache gì.
+
+```sql
+-- Campaign entities (simplified)
+CREATE TABLE campaigns (
+    campaign_id BIGSERIAL PRIMARY KEY,
+    advertiser_id BIGINT NOT NULL,
+    objective VARCHAR(32) NOT NULL,          -- clicks/conversions/impressions
+    daily_budget_cents BIGINT NOT NULL,
+    status VARCHAR(16) NOT NULL,             -- ACTIVE/PAUSED/ENDED
+    start_at TIMESTAMP,
+    end_at TIMESTAMP
+);
+
+CREATE TABLE creatives (
+    creative_id BIGSERIAL PRIMARY KEY,
+    campaign_id BIGINT NOT NULL,
+    asset_url TEXT NOT NULL,
+    width INT, height INT,
+    status VARCHAR(16) NOT NULL,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(campaign_id)
+);
+
+-- Targeting rules: stored in DB, compiled into in-memory/Redis structures for serving
+CREATE TABLE targeting_rules (
+    rule_id BIGSERIAL PRIMARY KEY,
+    campaign_id BIGINT NOT NULL,
+    country CHAR(2),
+    device VARCHAR(16),
+    segments JSONB,                           -- interests, lookalikes, etc.
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
 ```
-[Publisher Page/App]
-      ↓
-[Ad Request]
-      ↓
-[CDN Edge (Ad Tag)]
-      ↓
-[Ad Server Cluster]
-      ↓
-   ┌──┴────────┬─────────┬────────┐
-   ↓           ↓         ↓        ↓
-[Targeting  [Auction   [Fraud   [Creative
- Engine]    Service]   Detection] Storage]
-   ↓           ↓         ↓
-[Demand-Side Platforms (DSPs)]
-   ↓
-[Analytics & Reporting (Kafka → BigQuery)]
-```
 
-### Core Components
+**Frequency cap key** (serving hot path):
+- `fc:{user_id}:{campaign_id}` → count + TTL(window)
 
-**1. Ad Request & Response Schema**
+**Auction pseudo-code (GSP-like)**:
 
 ```python
-from dataclasses import dataclass
-from typing import List, Optional, Dict
-from enum import Enum
+def serve_ad(req):
+    # 0) Hard deadline: stop work at ~45ms, keep 5ms for network
+    deadline_ms = 45
 
-class AdFormat(Enum):
-    BANNER = "banner"
-    NATIVE = "native"
-    VIDEO = "video"
-    INTERSTITIAL = "interstitial"
+    user = get_user_signals(req)                # cache
+    candidates = eligible_campaigns(req, user)  # precomputed/in-memory
 
-class DeviceType(Enum):
-    DESKTOP = "desktop"
-    MOBILE = "mobile"
-    TABLET = "tablet"
+    # 1) Apply frequency cap + budget allowance
+    candidates = [c for c in candidates if freq_ok(req.user_id, c.id)]
+    candidates = [c for c in candidates if pacing_allows(c.id)]
 
-@dataclass
-class AdRequest:
-    request_id: str
-    publisher_id: str
-    placement_id: str
-    ad_format: AdFormat
-    device_type: DeviceType
-    user_id: Optional[str]
-    ip_address: str
-    user_agent: str
-    page_url: str
-    page_keywords: List[str]
-    geo: Dict[str, str]  # country, region, city
-    timestamp: float
+    # 2) Score & pick winner
+    scored = []
+    for c in candidates:
+        quality = quality_score(req, c)  # cached model / rules
+        scored.append((c.bid * quality, c, quality))
+    scored.sort(reverse=True)
 
-@dataclass
-class AdResponse:
-    request_id: str
-    ad_id: str
-    creative_url: str
-    click_url: str
-    impression_url: str
-    bid_price: float
-    advertiser_id: str
+    winner = scored[0]
+    price = compute_second_price(scored)  # GSP-ish
+
+    # 3) Emit impression event async (must be idempotent)
+    emit_impression(winner, price, req.request_id)
+    return build_response(winner.creative, price)
 ```
 
-**2. Ad Server Implementation**
+Key invariants you can say out loud:
+- Impression/click events must be idempotent (retry-safe), otherwise spend & caps drift.
+- Serving chooses within deadline; “no ad” is better than tail latency.
 
-```python
-from fastapi import FastAPI, Request
-import asyncio
-import time
+### 4.1 Real-Time Bidding (RTB)
 
-app = FastAPI()
-
-@app.post("/api/v1/ad/request")
-async def serve_ad(ad_request: AdRequest):
-    start_time = time.time()
-    
-    # 1. Fraud check (non-blocking)
-    fraud_task = asyncio.create_task(check_fraud(ad_request))
-    
-    # 2. Get user targeting profile
-    user_profile = await get_user_profile(ad_request.user_id)
-    
-    # 3. Get eligible campaigns
-    eligible_campaigns = await get_eligible_campaigns(
-        ad_request,
-        user_profile
-    )
-    
-    if not eligible_campaigns:
-        return {"status": "no_fill"}
-    
-    # 4. Run auction
-    winning_bid = await run_auction(eligible_campaigns, ad_request)
-    
-    # 5. Wait for fraud check
-    fraud_result = await fraud_task
-    if fraud_result['is_fraud']:
-        log_fraud_event(ad_request, fraud_result)
-        return {"status": "no_fill"}
-    
-    # 6. Build response
-    response = build_ad_response(winning_bid, ad_request)
-    
-    # 7. Log impression event
-    asyncio.create_task(log_impression(response, ad_request))
-    
-    latency = (time.time() - start_time) * 1000
-    metrics.observe('ad_latency_ms', latency)
-    
-    return response
-
-async def get_eligible_campaigns(ad_request: AdRequest, user_profile: dict):
-    # Query campaigns matching:
-    # - Publisher/placement
-    # - Ad format
-    # - Geo targeting
-    # - Device targeting
-    # - Budget constraints
-    # - Frequency caps
-    
-    cache_key = f"campaigns:{ad_request.placement_id}:{ad_request.geo['country']}"
-    cached = await redis.get(cache_key)
-    
-    if cached:
-        campaigns = json.loads(cached)
-    else:
-        campaigns = await db.query("""
-            SELECT * FROM campaigns c
-            JOIN campaign_targeting ct ON c.campaign_id = ct.campaign_id
-            WHERE ct.placement_id = ?
-            AND ct.geo_country = ?
-            AND c.status = 'active'
-            AND c.daily_budget > c.daily_spent
-        """, ad_request.placement_id, ad_request.geo['country'])
-        
-        await redis.setex(cache_key, 60, json.dumps(campaigns))
-    
-    # Filter by user targeting
-    return [c for c in campaigns if matches_targeting(c, user_profile, ad_request)]
+```
+        ┌──────────┐
+        │   User   │
+        │ loads    │
+        │ page     │
+        └────┬─────┘
+             │
+             ▼
+        ┌──────────────┐
+        │  Publisher   │
+        │  (website)   │
+        └──────┬───────┘
+               │ Ad request
+               ▼
+        ┌──────────────┐
+        │  Ad Server   │ ◀─────────────────────────┐
+        │              │                           │
+        └──────┬───────┘                           │
+               │ Auction request                   │ Winning
+               │ (parallel to DSPs)                │ ad
+         ┌─────┼─────┐                             │
+         ▼     ▼     ▼                             │
+      ┌─────┐┌─────┐┌─────┐                        │
+      │DSP 1││DSP 2││DSP 3│ (Demand Side          │
+      │     ││     ││     │  Platforms)            │
+      └──┬──┘└──┬──┘└──┬──┘                        │
+         │     │     │                             │
+         │ Bid │ Bid │ Bid                         │
+         └─────┴─────┴────────────────────────────►│
 ```
 
-**3. Real-Time Bidding (RTB) Auction**
-
-```python
-class AuctionService:
-    def __init__(self):
-        self.dsp_endpoints = {
-            'dsp1': 'https://dsp1.example.com/bid',
-            'dsp2': 'https://dsp2.example.com/bid',
-        }
-        self.timeout_ms = 100
-    
-    async def run_auction(self, campaigns: List[dict], ad_request: AdRequest):
-        # First-price or second-price auction
-        
-        # 1. Send bid requests to DSPs
-        bid_request = self.build_bid_request(ad_request)
-        
-        tasks = []
-        for dsp_id, endpoint in self.dsp_endpoints.items():
-            task = asyncio.create_task(
-                self.request_bid(dsp_id, endpoint, bid_request)
-            )
-            tasks.append(task)
-        
-        # Also add internal campaigns
-        for campaign in campaigns:
-            bid = self.calculate_internal_bid(campaign, ad_request)
-            tasks.append(asyncio.coroutine(lambda: bid)())
-        
-        # Wait for bids with timeout
-        done, pending = await asyncio.wait(
-            tasks,
-            timeout=self.timeout_ms / 1000
-        )
-        
-        # Cancel pending
-        for task in pending:
-            task.cancel()
-        
-        # Collect bids
-        bids = []
-        for task in done:
-            try:
-                bid = task.result()
-                if bid and bid['price'] > 0:
-                    bids.append(bid)
-            except:
-                pass
-        
-        if not bids:
-            return None
-        
-        # 2. Run second-price auction
-        sorted_bids = sorted(bids, key=lambda x: x['price'], reverse=True)
-        winner = sorted_bids[0]
-        
-        # Winner pays second-highest price + 0.01
-        if len(sorted_bids) > 1:
-            winner['clearing_price'] = sorted_bids[1]['price'] + 0.01
-        else:
-            winner['clearing_price'] = winner['price']
-        
-        return winner
-    
-    async def request_bid(self, dsp_id: str, endpoint: str, bid_request: dict):
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    endpoint,
-                    json=bid_request,
-                    timeout=aiohttp.ClientTimeout(total=self.timeout_ms/1000)
-                ) as response:
-                    if response.status == 200:
-                        bid = await response.json()
-                        bid['dsp_id'] = dsp_id
-                        return bid
-        except:
-            return None
-```
-
-**4. Targeting Engine**
-
-```python
-class TargetingEngine:
-    def matches_targeting(self, campaign: dict, user_profile: dict, ad_request: AdRequest) -> bool:
-        targeting = campaign['targeting']
-        
-        # Geo targeting
-        if 'geo' in targeting:
-            if not self.matches_geo(targeting['geo'], ad_request.geo):
-                return False
-        
-        # Device targeting
-        if 'devices' in targeting:
-            if ad_request.device_type.value not in targeting['devices']:
-                return False
-        
-        # Demographics
-        if 'demographics' in targeting:
-            if not self.matches_demographics(targeting['demographics'], user_profile):
-                return False
-        
-        # Interest targeting
-        if 'interests' in targeting:
-            user_interests = user_profile.get('interests', [])
-            if not any(i in user_interests for i in targeting['interests']):
-                return False
-        
-        # Frequency cap
-        if not self.check_frequency_cap(campaign, user_profile):
-            return False
-        
-        # Time targeting
-        if 'schedule' in targeting:
-            if not self.matches_schedule(targeting['schedule'], ad_request.timestamp):
-                return False
-        
-        return True
-    
-    def check_frequency_cap(self, campaign: dict, user_profile: dict) -> bool:
-        user_id = user_profile.get('user_id')
-        if not user_id:
-            return True
-        
-        cap = campaign.get('frequency_cap', {})
-        max_impressions = cap.get('max_impressions', float('inf'))
-        time_window = cap.get('time_window_hours', 24)
-        
-        key = f"freq:{campaign['campaign_id']}:{user_id}"
-        current = redis.get(key)
-        
-        if current and int(current) >= max_impressions:
-            return False
-        
-        return True
-    
-    def increment_frequency(self, campaign_id: str, user_id: str):
-        key = f"freq:{campaign_id}:{user_id}"
-        redis.incr(key)
-        redis.expire(key, 86400)  # 24 hour window
-```
-
-**5. Fraud Detection**
+### 4.2 Fraud Detection
 
 ```python
 class FraudDetector:
-    def __init__(self):
-        self.ml_model = load_fraud_model()
-        self.ip_blacklist = self.load_blacklist('ips')
-        self.user_agent_blacklist = self.load_blacklist('user_agents')
+    """
+    Ad fraud costs industry $100B/year.
     
-    async def check_fraud(self, ad_request: AdRequest) -> dict:
-        score = 0.0
-        reasons = []
-        
-        # 1. IP blacklist check
-        if ad_request.ip_address in self.ip_blacklist:
-            return {'is_fraud': True, 'reason': 'blacklisted_ip', 'score': 1.0}
-        
-        # 2. User agent validation
-        if self.is_invalid_user_agent(ad_request.user_agent):
-            score += 0.3
-            reasons.append('invalid_ua')
-        
-        # 3. Data center IP detection
-        if await self.is_datacenter_ip(ad_request.ip_address):
-            score += 0.4
-            reasons.append('datacenter_ip')
-        
-        # 4. Request rate analysis
-        rate = await self.get_request_rate(ad_request.ip_address)
-        if rate > 100:  # Requests per minute
-            score += 0.3
-            reasons.append('high_rate')
-        
-        # 5. ML-based fraud detection
-        features = self.extract_features(ad_request)
-        ml_score = self.ml_model.predict_proba(features)[0][1]
-        score = max(score, ml_score)
-        
-        # 6. Click pattern analysis (for click fraud)
-        if ad_request.user_id:
-            click_pattern = await self.analyze_click_pattern(ad_request.user_id)
-            if click_pattern['suspicious']:
-                score += 0.2
-                reasons.append('suspicious_clicks')
-        
-        return {
-            'is_fraud': score > 0.7,
-            'score': score,
-            'reasons': reasons
-        }
+    Types:
+    1. Bot traffic (fake impressions)
+    2. Click farms (fake clicks)
+    3. Domain spoofing (fake premium sites)
+    """
     
-    def is_invalid_user_agent(self, user_agent: str) -> bool:
-        if not user_agent or len(user_agent) < 10:
+    def is_fraud(self, request):
+        # 1. IP reputation
+        if self.is_datacenter_ip(request.ip):
             return True
-        if user_agent in self.user_agent_blacklist:
+        
+        # 2. Device fingerprint anomaly
+        if self.fingerprint_seen_too_often(request.device_id):
             return True
-        # Check for known bot patterns
-        bot_patterns = ['bot', 'crawler', 'spider', 'headless']
-        return any(p in user_agent.lower() for p in bot_patterns)
-```
-
-**6. Analytics & Reporting**
-
-```python
-from kafka import KafkaProducer
-
-class AdAnalytics:
-    def __init__(self):
-        self.producer = KafkaProducer(
-            bootstrap_servers=['kafka:9092'],
-            value_serializer=lambda x: json.dumps(x).encode('utf-8')
-        )
-    
-    async def log_impression(self, ad_response: dict, ad_request: AdRequest):
-        event = {
-            'event_type': 'impression',
-            'request_id': ad_request.request_id,
-            'ad_id': ad_response['ad_id'],
-            'campaign_id': ad_response['campaign_id'],
-            'advertiser_id': ad_response['advertiser_id'],
-            'publisher_id': ad_request.publisher_id,
-            'user_id': ad_request.user_id,
-            'timestamp': time.time(),
-            'bid_price': ad_response['clearing_price'],
-            'geo': ad_request.geo,
-            'device': ad_request.device_type.value
-        }
         
-        self.producer.send('ad_events', event)
-        
-        # Update real-time counters
-        await self.update_counters(event)
-    
-    async def log_click(self, request_id: str, ad_id: str, user_id: str):
-        event = {
-            'event_type': 'click',
-            'request_id': request_id,
-            'ad_id': ad_id,
-            'user_id': user_id,
-            'timestamp': time.time()
-        }
-        
-        self.producer.send('ad_events', event)
-        
-        # Update CTR metrics
-        await self.update_ctr(ad_id)
-    
-    async def update_counters(self, event: dict):
-        # Real-time aggregations in Redis
-        hour = datetime.now().strftime('%Y%m%d%H')
-        
-        redis.hincrby(f"impressions:{hour}", event['campaign_id'], 1)
-        redis.hincrbyfloat(f"spend:{hour}", event['campaign_id'], event['bid_price'])
-        
-        # Publisher revenue
-        redis.hincrbyfloat(f"revenue:{hour}", event['publisher_id'], event['bid_price'] * 0.7)
-```
-
-**7. Budget Management**
-
-```python
-class BudgetManager:
-    def __init__(self):
-        self.redis = redis.Redis()
-    
-    async def check_budget(self, campaign_id: str, bid_amount: float) -> bool:
-        # Daily budget check
-        daily_key = f"spend:daily:{campaign_id}:{today()}"
-        daily_spent = float(self.redis.get(daily_key) or 0)
-        
-        campaign = await get_campaign(campaign_id)
-        if daily_spent + bid_amount > campaign['daily_budget']:
-            return False
-        
-        # Lifetime budget check
-        lifetime_key = f"spend:lifetime:{campaign_id}"
-        lifetime_spent = float(self.redis.get(lifetime_key) or 0)
-        
-        if lifetime_spent + bid_amount > campaign['lifetime_budget']:
-            return False
-        
-        return True
-    
-    async def record_spend(self, campaign_id: str, amount: float):
-        # Atomic update
-        daily_key = f"spend:daily:{campaign_id}:{today()}"
-        lifetime_key = f"spend:lifetime:{campaign_id}"
-        
-        pipe = self.redis.pipeline()
-        pipe.incrbyfloat(daily_key, amount)
-        pipe.expire(daily_key, 86400 * 2)  # Keep 2 days
-        pipe.incrbyfloat(lifetime_key, amount)
-        pipe.execute()
-        
-        # Check if campaign should be paused
-        await self.check_budget_exhausted(campaign_id)
-    
-    async def check_budget_exhausted(self, campaign_id: str):
-        if not await self.check_budget(campaign_id, 0):
-            # Pause campaign
-            await db.execute("""
-                UPDATE campaigns SET status = 'budget_exhausted'
-                WHERE campaign_id = ?
-            """, campaign_id)
+        # 3. Behavior analysis
+        if self.click_rate_abnormal(request.user_id):
+            return True
             
-            # Invalidate campaign cache
-            await self.invalidate_campaign_cache(campaign_id)
+        # 4. ML model for sophisticated fraud
+        fraud_score = self.ml_model.predict(request.features)
+        return fraud_score > 0.8
 ```
 
-**8. A/B Testing for Ads**
+### 🗄️ Ad Metrics Database Schema
 
-```python
-class AdExperiment:
-    def __init__(self):
-        self.experiments = {}
+```sql
+-- Ad campaigns and performance tracking
+CREATE TABLE campaigns (
+    id BIGSERIAL PRIMARY KEY,
+    advertiser_id BIGINT NOT NULL,
+    name VARCHAR(200) NOT NULL,
     
-    def get_experiment_variant(self, experiment_id: str, user_id: str) -> str:
-        experiment = self.experiments.get(experiment_id)
-        if not experiment:
-            return 'control'
-        
-        # Consistent hashing for user assignment
-        hash_input = f"{experiment_id}:{user_id}"
-        hash_value = int(hashlib.md5(hash_input.encode()).hexdigest(), 16)
-        bucket = hash_value % 100
-        
-        cumulative = 0
-        for variant, percentage in experiment['variants'].items():
-            cumulative += percentage
-            if bucket < cumulative:
-                return variant
-        
-        return 'control'
+    -- Targeting
+    target_audience JSONB,             -- age, gender, interests
+    target_locations JSONB,            -- countries, cities, geohash
+    target_keywords TEXT[],
     
-    def track_conversion(self, experiment_id: str, variant: str, conversion_type: str):
-        key = f"experiment:{experiment_id}:{variant}:{conversion_type}"
-        redis.incr(key)
+    -- Budget
+    daily_budget DECIMAL(12, 2) NOT NULL,
+    total_budget DECIMAL(12, 2),
+    bid_strategy VARCHAR(20) NOT NULL, -- CPC, CPM, CPA
+    max_bid DECIMAL(10, 4),
     
-    def get_experiment_results(self, experiment_id: str) -> dict:
-        results = {}
-        experiment = self.experiments[experiment_id]
-        
-        for variant in experiment['variants']:
-            impressions = int(redis.get(f"experiment:{experiment_id}:{variant}:impression") or 0)
-            clicks = int(redis.get(f"experiment:{experiment_id}:{variant}:click") or 0)
-            conversions = int(redis.get(f"experiment:{experiment_id}:{variant}:conversion") or 0)
-            
-            results[variant] = {
-                'impressions': impressions,
-                'clicks': clicks,
-                'conversions': conversions,
-                'ctr': clicks / impressions if impressions > 0 else 0,
-                'cvr': conversions / clicks if clicks > 0 else 0
-            }
-        
-        return results
+    -- Status
+    status VARCHAR(20) DEFAULT 'ACTIVE',
+    start_date DATE,
+    end_date DATE,
+    
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Real-time metrics (time-series)
+CREATE TABLE ad_impressions (
+    campaign_id BIGINT NOT NULL,
+    ad_id BIGINT NOT NULL,
+    
+    -- When/where
+    impression_time TIMESTAMP NOT NULL,
+    publisher_id BIGINT NOT NULL,
+    placement_id VARCHAR(100),
+    
+    -- User context (anonymized)
+    user_segment VARCHAR(50),
+    device_type VARCHAR(20),
+    country CHAR(2),
+    
+    -- Result
+    won_auction BOOLEAN,
+    winning_bid DECIMAL(10, 6),
+    was_clicked BOOLEAN DEFAULT FALSE,
+    was_converted BOOLEAN DEFAULT FALSE,
+    
+    -- Fraud signal
+    fraud_score FLOAT,
+    is_valid BOOLEAN DEFAULT TRUE
+) PARTITION BY RANGE (impression_time);
+
+-- Create daily partitions
+CREATE TABLE ad_impressions_2024_01_01 
+    PARTITION OF ad_impressions 
+    FOR VALUES FROM ('2024-01-01') TO ('2024-01-02');
+
+-- Aggregated metrics (for dashboards)
+CREATE MATERIALIZED VIEW campaign_daily_metrics AS
+SELECT 
+    campaign_id,
+    DATE(impression_time) as date,
+    COUNT(*) as impressions,
+    COUNT(*) FILTER (WHERE was_clicked) as clicks,
+    COUNT(*) FILTER (WHERE was_converted) as conversions,
+    SUM(winning_bid) as spend,
+    AVG(fraud_score) as avg_fraud_score
+FROM ad_impressions
+WHERE is_valid = TRUE
+GROUP BY campaign_id, DATE(impression_time);
 ```
 
-**9. High Availability & Performance**
+### ⚠️ Failure Scenarios & Handling
 
-```python
-# Multi-region deployment with edge computing
-class AdServerCluster:
-    def __init__(self):
-        self.regions = ['us-east', 'us-west', 'eu-west', 'ap-northeast']
-        self.local_cache = LRUCache(maxsize=10000)
-    
-    async def get_ads_with_fallback(self, ad_request: AdRequest):
-        # Try local region first
-        try:
-            return await self.serve_local(ad_request)
-        except Exception as e:
-            # Fallback to other regions
-            for region in self.regions:
-                if region != self.current_region:
-                    try:
-                        return await self.serve_from_region(region, ad_request)
-                    except:
-                        continue
-            
-            # Return house ad as last resort
-            return self.get_house_ad(ad_request)
-    
-    def get_house_ad(self, ad_request: AdRequest):
-        # Return fallback/house advertisement
-        return {
-            'ad_id': 'house_ad',
-            'creative_url': '/static/house_ads/default.jpg',
-            'click_url': '/',
-            'bid_price': 0
-        }
+| Failure | Impact | Mitigation |
+|---------|--------|------------|
+| **DSP timeout** | Lost bid opportunity | 99th percentile timeout (100ms), fallback ads |
+| **Budget exhaustion** | Ads stop mid-day | Real-time budget pacing, not first-come |
+| **Fraud spike** | Wasted budget | Real-time fraud ML + budget freeze |
+| **Publisher outage** | No ad revenue | Multi-publisher strategy, house ads |
+| **Targeting data stale** | Wrong audience | TTL on user segments, refresh on login |
 
-# Connection pooling for database
-from asyncpg import create_pool
+### 🌍 Real-World Case Study: Google Ads
 
-db_pool = await create_pool(
-    host='db-primary.internal',
-    min_size=10,
-    max_size=100,
-    command_timeout=60
-)
+| Aspect | Google's Approach | Learning |
+|--------|-------------------|----------|
+| **Auction type** | Generalized Second Price | Winner pays 2nd highest bid + $0.01 |
+| **Quality Score** | CTR × relevance × landing page | High quality = lower cost per click |
+| **Pacing** | ML-based budget distribution | Spread evenly, not morning rush |
+| **Attribution** | Last-click + data-driven | Multi-touch increasingly important |
+| **Scale** | 8.5B searches/day × multiple ads | World's largest real-time auction |
+
+**Key Takeaways:**
+1. **Quality > Bid alone** - Incentivize good ads, better user experience
+2. **Fraud is war** - Continuous arms race with sophisticated bots
+3. **Pacing is crucial** - Don't spend budget by 10am
+4. **Attribution is hard** - User sees 7 ads before converting, who gets credit?
+
+---
+
+## 📈 Phase 5: Scaling, Budget Pacing, Reliability
+
+### Budget pacing (core production problem)
+
+- Nếu chỉ deduct budget realtime theo impression/click, chiến dịch sẽ “cháy” sớm.
+- Giải pháp: pacing engine tính allowance theo time-of-day + predicted traffic, rồi publish quota vào cache.
+
+### Frequency capping
+
+- Store per-user counters: `(user_id, campaign_id) -> count + TTL` (Redis).
+- TTL theo window (e.g., 24h).
+
+### Timeouts & fallbacks
+
+- DSP timeout strict (e.g., 10–20ms per DSP) + parallel requests.
+- Nếu timeout: fallback to house ads hoặc cached winner.
+
+---
+
+## 📊 Observability
+
+Serving metrics:
+- `adserve_latency_ms` (p95/p99)
+- `auction_timeout_total{dsp}`
+- `fill_rate` (requests served / requests)
+- `invalid_traffic_rate` (fraud)
+
+Business metrics:
+- CTR, CVR, eCPM, spend pacing error
+
+---
+
+# 20. ML Model Serving
+
+> **Ví dụ thực tế**: Recommendation systems, fraud detection
+
+## 🎯 Phase 1: Key Challenges
+
+1. **Low latency**: <10ms p99 for real-time inference
+2. **A/B testing**: Multiple model versions simultaneously
+3. **No downtime**: Deploy new models without interruption
+4. **Drift detection**: Models degrade over time
+
+---
+
+## 📊 Phase 2: Capacity Estimation (5 phút)
+
+Giả sử:
+- 500M inferences/day → ~5.8K RPS avg, peak 5x → ~30K RPS
+- p99 latency target: <10ms (online serving)
+
+Hệ quả:
+- Feature fetch + model inference phải nằm trong tight latency budget.
+- Cần autoscale + warm models + tránh cold start.
+
+---
+
+## 🏗️ Phase 3: High-Level Design
+
+```
+┌──────────┐   ┌──────────────┐   ┌──────────────┐
+│ Clients  │──▶│ API Gateway   │──▶│ Model Router  │
+└──────────┘   │ (auth, rate)  │   │ (A/B, canary) │
+         └──────┬───────┘   └──────┬───────┘
+             │                  │
+             │                  ▼
+             │          ┌──────────────────┐
+             │          │ Model Servers     │
+             │          │ (GPU/CPU pools)   │
+             │          └─────────┬────────┘
+             │                    │
+             ▼                    ▼
+         ┌──────────────┐    ┌──────────────────┐
+         │ Online Feature │    │ Model Registry    │
+         │ Store (Redis)  │    │ (MLflow/S3)       │
+         └──────────────┘    └──────────────────┘
+
+Async:
+- Prediction logs → Kafka → monitoring/drift/labels join
 ```
 
-**10. GDPR & Privacy Compliance**
+### Latency budget (example)
 
-```python
-class AdPrivacy:
-    def __init__(self):
-        self.consent_manager = ConsentManager()
-    
-    async def process_ad_request(self, ad_request: AdRequest):
-        # Check user consent
-        if ad_request.user_id:
-            consent = await self.consent_manager.get_consent(ad_request.user_id)
-            
-            if not consent.get('personalized_ads', False):
-                # Serve contextual ads only
-                return await self.serve_contextual_ads(ad_request)
-        
-        # Full personalized ads
-        return await self.serve_personalized_ads(ad_request)
-    
-    def anonymize_user_id(self, user_id: str) -> str:
-        # Hash user ID for privacy
-        return hashlib.sha256(f"{user_id}:{SALT}".encode()).hexdigest()[:32]
-    
-    async def handle_data_deletion(self, user_id: str):
-        # GDPR right to erasure
-        await redis.delete(f"user_profile:{user_id}")
-        await redis.delete(f"user_interests:{user_id}")
-        
-        # Delete from all frequency caps
-        keys = redis.keys(f"freq:*:{user_id}")
-        if keys:
-            redis.delete(*keys)
-        
-        # Log deletion
-        await audit_log.log('data_deletion', user_id)
+```
+Total p99: 10ms
+- Feature fetch: 2ms
+- Deserialize + preprocessing: 1ms
+- Inference: 5ms
+- Postprocess + response: 2ms
 ```
 
 ---
 
-## 20. Design a Machine Learning Model Serving System (NAVER AI Recs)
+## Deep Reading Notes (Q20)
 
-### Requirements
-- 500M inferences/ngày
-- Real-time predictions (<10ms p99)
-- A/B testing for models
-- Model updates without downtime
-- Monitoring for model drift
-- Feature store integration
+- Hot path: request → route (A/B/canary) → fetch features (online store) → preprocess → inference → postprocess → respond; enforce per-step deadlines.
+- Invariants:
+    - Feature/schema compatibility: model version must match feature definitions (avoid silent feature shift).
+    - Experiment assignment stability: same user/entity consistently hits same variant within window (stickiness).
+    - Reproducibility: every prediction traceable to `(model_version, feature_version, code_version)`.
+    - Safety: PII in logs/feature store handled per policy.
+- Trade-offs:
+    - Precompute features vs on-demand: freshness vs latency.
+    - Batching (GPU) vs tail latency: throughput vs p99/p999.
+    - Strong consistency for router/assignment vs eventual: correctness of experiments vs availability.
+- Failure drills:
+    - Feature store slow/down: fallback defaults / last-known-good / degrade model; circuit breaker.
+    - Model regression detected (quality/drift): fast rollback, kill switch per variant.
+    - Traffic spike: shed load, prioritize critical endpoints, autoscale + warm pools.
 
-### High-Level Architecture
+## 🔬 Phase 4: Deep Dive
 
-```
-[Client Request]
-      ↓
-[API Gateway]
-      ↓
-[Load Balancer]
-      ↓
-[Model Router]
-      ↓
-   ┌──┴────────┬─────────┬────────┐
-   ↓           ↓         ↓        ↓
-[Model A    [Model B   [Model C  [Shadow
- v1.0]       v1.1]      v2.0]    Models]
-   ↓           ↓         ↓
-[Feature Store (Redis/Feast)]
-   ↓
-[Model Registry (MLflow)]
-   ↓
-[Monitoring (Prometheus + Grafana)]
+### 4.0 Serving API + Router Algorithm (để tránh nói chung chung)
+
+**Serving API** (gRPC/HTTP đều được, nhưng phải nêu request/response fields):
+
+```http
+POST /predict
 ```
 
-### Core Components
+```json
+{
+    "request_id": "...",
+    "entity_type": "user",
+    "entity_id": "123",
+    "context": {"device": "mobile", "country": "KR"},
+    "features_override": null
+}
+```
 
-**1. Model Server Implementation**
+```json
+{
+    "request_id": "...",
+    "score": 0.873,
+    "model_version": "fraud-v17",
+    "feature_version": "fs-v5",
+    "latency_ms": 7
+}
+```
+
+**Router stickiness** (A/B/canary):
 
 ```python
-from fastapi import FastAPI, HTTPException
-import numpy as np
-import asyncio
-from dataclasses import dataclass
-from typing import List, Dict, Any
-
-app = FastAPI()
-
-@dataclass
-class PredictionRequest:
-    model_name: str
-    model_version: str
-    features: Dict[str, Any]
-    user_id: str
-    request_id: str
-
-@dataclass
-class PredictionResponse:
-    request_id: str
-    predictions: List[float]
-    model_version: str
-    latency_ms: float
-
-class ModelServer:
-    def __init__(self):
-        self.models = {}  # {model_name: {version: model}}
-        self.model_registry = ModelRegistry()
-        self.feature_store = FeatureStore()
-    
-    async def predict(self, request: PredictionRequest) -> PredictionResponse:
-        start_time = time.time()
-        
-        # 1. Get model
-        model = self.get_model(request.model_name, request.model_version)
-        if not model:
-            raise HTTPException(404, f"Model {request.model_name}:{request.model_version} not found")
-        
-        # 2. Enrich features from feature store
-        enriched_features = await self.feature_store.get_features(
-            request.user_id,
-            request.features
-        )
-        
-        # 3. Preprocess features
-        input_tensor = model.preprocess(enriched_features)
-        
-        # 4. Run inference
-        predictions = await model.predict(input_tensor)
-        
-        # 5. Post-process
-        result = model.postprocess(predictions)
-        
-        latency = (time.time() - start_time) * 1000
-        
-        # 6. Log for monitoring
-        asyncio.create_task(self.log_prediction(request, result, latency))
-        
-        return PredictionResponse(
-            request_id=request.request_id,
-            predictions=result,
-            model_version=request.model_version,
-            latency_ms=latency
-        )
-    
-    def get_model(self, model_name: str, version: str):
-        if model_name in self.models:
-            if version in self.models[model_name]:
-                return self.models[model_name][version]
-            elif version == "latest":
-                return self.models[model_name][max(self.models[model_name].keys())]
-        return None
-    
-    async def load_model(self, model_name: str, version: str):
-        # Download from model registry
-        model_artifact = await self.model_registry.download(model_name, version)
-        
-        # Load model based on framework
-        if model_artifact['framework'] == 'tensorflow':
-            model = TensorFlowModel.load(model_artifact['path'])
-        elif model_artifact['framework'] == 'pytorch':
-            model = PyTorchModel.load(model_artifact['path'])
-        elif model_artifact['framework'] == 'sklearn':
-            model = SklearnModel.load(model_artifact['path'])
-        
-        # Register
-        if model_name not in self.models:
-            self.models[model_name] = {}
-        self.models[model_name][version] = model
-        
-        return model
-
-@app.post("/api/v1/predict")
-async def predict(request: PredictionRequest):
-    return await model_server.predict(request)
+def pick_variant(entity_id: str, rollout):
+    # Stable bucketing to keep user in same variant
+    bucket = murmur3_32(entity_id) % 10_000
+    if bucket < rollout.canary_bp:   # basis points
+        return rollout.canary_model
+    if bucket < rollout.ab_bp:
+        return rollout.ab_model
+    return rollout.base_model
 ```
 
-**2. Model Wrapper Classes**
+**Online Feature Store keying**:
+- Key: `fs:{entity_type}:{entity_id}:{feature_version}`
+- Value: packed vector + timestamp (to measure staleness)
 
-```python
-import tensorflow as tf
-import torch
-import joblib
+**Prediction logging schema** (for drift + join labels):
+- `(request_id, entity_id_hash, model_version, feature_version, prediction, features_digest, served_at)` → Kafka
 
-class BaseModel:
-    def __init__(self, model, config):
-        self.model = model
-        self.config = config
-    
-    def preprocess(self, features: dict) -> np.ndarray:
-        raise NotImplementedError
-    
-    async def predict(self, input_tensor: np.ndarray) -> np.ndarray:
-        raise NotImplementedError
-    
-    def postprocess(self, predictions: np.ndarray) -> List[float]:
-        raise NotImplementedError
+### 4.1 Model Deployment Patterns
 
-class TensorFlowModel(BaseModel):
-    @classmethod
-    def load(cls, path: str):
-        model = tf.saved_model.load(path)
-        config = json.load(open(f"{path}/config.json"))
-        return cls(model, config)
-    
-    def preprocess(self, features: dict) -> tf.Tensor:
-        # Convert features to tensor
-        feature_order = self.config['feature_order']
-        values = [features[f] for f in feature_order]
-        return tf.constant([values], dtype=tf.float32)
-    
-    async def predict(self, input_tensor: tf.Tensor) -> np.ndarray:
-        # Run in thread pool to avoid blocking
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None,
-            lambda: self.model.signatures['serving_default'](input_tensor)
-        )
-        return result['predictions'].numpy()
-    
-    def postprocess(self, predictions: np.ndarray) -> List[float]:
-        return predictions[0].tolist()
+```
+Blue-Green Deployment:
+┌─────────────────┐         ┌─────────────────┐
+│   Model v1      │ ◀──100%──│   Load Balancer │
+│   (Blue)        │         │                 │
+├─────────────────┤         │                 │
+│   Model v2      │ ──0%────│                 │
+│   (Green)       │         └─────────────────┘
+└─────────────────┘
 
-class PyTorchModel(BaseModel):
-    @classmethod
-    def load(cls, path: str):
-        model = torch.jit.load(f"{path}/model.pt")
-        model.eval()
-        config = json.load(open(f"{path}/config.json"))
-        return cls(model, config)
-    
-    async def predict(self, input_tensor: torch.Tensor) -> np.ndarray:
-        with torch.no_grad():
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None,
-                lambda: self.model(input_tensor)
-            )
-        return result.numpy()
+Switch: 0% → 100% instantly (risky but fast)
+
+
+Canary Deployment:
+┌─────────────────┐         ┌─────────────────┐
+│   Model v1      │ ◀──95%───│   Load Balancer │
+│                 │         │                 │
+├─────────────────┤         │                 │
+│   Model v2      │ ◀──5%────│   (gradual)     │
+│   (Canary)      │         └─────────────────┘
+└─────────────────┘
+
+Switch: 5% → 10% → 25% → 50% → 100%
 ```
 
-**3. Feature Store Integration**
+### 4.2 Feature Store
 
-```python
-import redis
-from feast import FeatureStore as FeastStore
+```
+Problem: Training và serving dùng feature khác nhau
+→ Training/Serving skew → Model performs poorly
 
-class FeatureStore:
-    def __init__(self):
-        self.redis = redis.Redis(host='redis-features', decode_responses=True)
-        self.feast = FeastStore(repo_path="feature_repo")
-    
-    async def get_features(self, user_id: str, request_features: dict) -> dict:
-        # Combine request features with stored features
-        enriched = request_features.copy()
-        
-        # 1. Get user features from Redis (fast path)
-        user_features = await self.get_user_features(user_id)
-        enriched.update(user_features)
-        
-        # 2. Get real-time features (if needed)
-        realtime_features = await self.get_realtime_features(user_id)
-        enriched.update(realtime_features)
-        
-        return enriched
-    
-    async def get_user_features(self, user_id: str) -> dict:
-        cache_key = f"user_features:{user_id}"
-        cached = self.redis.hgetall(cache_key)
-        
-        if cached:
-            return {k: float(v) for k, v in cached.items()}
-        
-        # Fallback to Feast
-        features = self.feast.get_online_features(
-            features=[
-                "user_features:age",
-                "user_features:purchase_count_30d",
-                "user_features:avg_session_duration",
-                "user_features:interests_embedding"
-            ],
-            entity_rows=[{"user_id": user_id}]
-        ).to_dict()
-        
-        # Cache for future
-        self.redis.hset(cache_key, mapping=features)
-        self.redis.expire(cache_key, 3600)
-        
-        return features
-    
-    async def get_realtime_features(self, user_id: str) -> dict:
-        # Get features computed in real-time
-        return {
-            'session_page_views': await self.get_session_page_views(user_id),
-            'time_since_last_action': await self.get_time_since_last_action(user_id),
-            'current_hour': datetime.now().hour,
-            'day_of_week': datetime.now().weekday()
-        }
+Solution: Feature Store
+┌──────────────────────────────────────────────────────┐
+│                   FEATURE STORE                       │
+│                                                       │
+│  ┌─────────────┐    ┌─────────────┐                  │
+│  │  Offline    │    │   Online    │                  │
+│  │  Store      │    │   Store     │                  │
+│  │  (S3/Hive)  │    │   (Redis)   │                  │
+│  └──────┬──────┘    └──────┬──────┘                  │
+│         │                   │                        │
+│         ▼                   ▼                        │
+│  ┌─────────────┐    ┌─────────────┐                  │
+│  │  Training   │    │  Serving    │                  │
+│  │  Pipeline   │    │  Pipeline   │                  │
+│  └─────────────┘    └─────────────┘                  │
+│                                                       │
+│  Same feature definitions → No skew                  │
+└──────────────────────────────────────────────────────┘
 ```
 
-**4. Model Router for A/B Testing**
+### 4.3 Model Drift Detection
 
 ```python
-class ModelRouter:
-    def __init__(self):
-        self.experiments = {}
-        self.traffic_allocator = TrafficAllocator()
-    
-    def get_model_version(self, model_name: str, user_id: str, request_id: str) -> str:
-        # Check if there's an active experiment
-        experiment = self.experiments.get(model_name)
-        
-        if not experiment or not experiment['active']:
-            return experiment.get('default_version', 'latest')
-        
-        # Consistent hashing for user assignment
-        variant = self.traffic_allocator.get_variant(
-            experiment['id'],
-            user_id
-        )
-        
-        return experiment['variants'][variant]['model_version']
-    
-    def create_experiment(self, experiment_config: dict):
-        experiment_id = str(uuid.uuid4())
-        
-        self.experiments[experiment_config['model_name']] = {
-            'id': experiment_id,
-            'active': True,
-            'default_version': experiment_config['control_version'],
-            'variants': experiment_config['variants'],
-            'start_time': time.time(),
-            'metrics': {}
-        }
-        
-        return experiment_id
-    
-    async def record_experiment_outcome(self, experiment_id: str, variant: str, metric: str, value: float):
-        # Record for statistical analysis
-        key = f"experiment:{experiment_id}:{variant}:{metric}"
-        redis.lpush(key, value)
-        redis.ltrim(key, 0, 99999)  # Keep last 100k observations
-    
-    def get_experiment_results(self, experiment_id: str) -> dict:
-        experiment = self.get_experiment_by_id(experiment_id)
-        results = {}
-        
-        for variant_name, variant_config in experiment['variants'].items():
-            results[variant_name] = {
-                'predictions': self.get_variant_stats(experiment_id, variant_name, 'prediction_count'),
-                'avg_latency': self.get_variant_stats(experiment_id, variant_name, 'latency'),
-                'conversion_rate': self.get_variant_stats(experiment_id, variant_name, 'conversion')
-            }
-        
-        # Calculate statistical significance
-        results['statistical_significance'] = self.calculate_significance(results)
-        
-        return results
-
-class TrafficAllocator:
-    def get_variant(self, experiment_id: str, user_id: str) -> str:
-        hash_input = f"{experiment_id}:{user_id}"
-        hash_value = int(hashlib.md5(hash_input.encode()).hexdigest(), 16)
-        bucket = hash_value % 100
-        
-        experiment = experiments[experiment_id]
-        cumulative = 0
-        
-        for variant, config in experiment['variants'].items():
-            cumulative += config['traffic_percentage']
-            if bucket < cumulative:
-                return variant
-        
-        return 'control'
-```
-
-**5. Blue-Green & Canary Deployments**
-
-```python
-class ModelDeployment:
-    def __init__(self):
-        self.kubernetes = KubernetesClient()
-    
-    async def blue_green_deploy(self, model_name: str, new_version: str):
-        # 1. Deploy new version (green)
-        await self.deploy_model_version(model_name, new_version, replicas=3)
-        
-        # 2. Wait for healthy
-        await self.wait_for_healthy(model_name, new_version)
-        
-        # 3. Switch traffic
-        await self.update_service_selector(model_name, new_version)
-        
-        # 4. Keep old version for rollback (5 min)
-        await asyncio.sleep(300)
-        
-        # 5. If no errors, scale down old version
-        old_version = await self.get_current_version(model_name)
-        if not await self.has_errors(model_name, new_version):
-            await self.scale_down(model_name, old_version)
-        else:
-            # Rollback
-            await self.update_service_selector(model_name, old_version)
-            raise DeploymentError("Errors detected, rolled back")
-    
-    async def canary_deploy(self, model_name: str, new_version: str, stages: List[int]):
-        # Progressive rollout: [5, 25, 50, 100]
-        for percentage in stages:
-            # Update traffic split
-            await self.update_traffic_split(model_name, {
-                'stable': 100 - percentage,
-                'canary': percentage
-            }, new_version)
-            
-            # Wait and monitor
-            await asyncio.sleep(300)  # 5 minutes per stage
-            
-            # Check metrics
-            metrics = await self.get_canary_metrics(model_name, new_version)
-            
-            if metrics['error_rate'] > 0.01 or metrics['latency_p99'] > 50:
-                # Rollback
-                await self.rollback_canary(model_name)
-                raise DeploymentError(f"Canary failed at {percentage}%")
-        
-        # Promote canary to stable
-        await self.promote_canary(model_name, new_version)
-    
-    async def update_traffic_split(self, model_name: str, split: dict, canary_version: str):
-        # Using Istio VirtualService
-        virtual_service = {
-            'apiVersion': 'networking.istio.io/v1beta1',
-            'kind': 'VirtualService',
-            'spec': {
-                'http': [{
-                    'route': [
-                        {
-                            'destination': {'host': f'{model_name}-stable'},
-                            'weight': split['stable']
-                        },
-                        {
-                            'destination': {'host': f'{model_name}-canary'},
-                            'weight': split['canary']
-                        }
-                    ]
-                }]
-            }
-        }
-        
-        await self.kubernetes.apply(virtual_service)
-```
-
-**6. Model Drift Detection**
-
-```python
-from scipy import stats
-
 class DriftDetector:
-    def __init__(self):
-        self.baseline_distributions = {}
-        self.alert_threshold = 0.05  # p-value threshold
+    """
+    Monitor model performance over time.
     
-    async def check_drift(self, model_name: str) -> dict:
-        results = {
-            'has_drift': False,
-            'features': {},
-            'predictions': {}
-        }
-        
-        # Get recent predictions
-        recent_predictions = await self.get_recent_predictions(model_name, hours=24)
-        baseline_predictions = self.baseline_distributions.get(f"{model_name}_predictions")
-        
-        if baseline_predictions:
-            # KS test for prediction distribution
-            ks_stat, p_value = stats.ks_2samp(
-                baseline_predictions,
-                recent_predictions
-            )
-            
-            results['predictions'] = {
-                'ks_statistic': ks_stat,
-                'p_value': p_value,
-                'drift_detected': p_value < self.alert_threshold
-            }
-            
-            if p_value < self.alert_threshold:
-                results['has_drift'] = True
-        
-        # Check feature distributions
-        for feature_name in self.get_monitored_features(model_name):
-            drift = await self.check_feature_drift(model_name, feature_name)
-            results['features'][feature_name] = drift
-            
-            if drift['drift_detected']:
-                results['has_drift'] = True
-        
-        # Alert if drift detected
-        if results['has_drift']:
-            await self.send_drift_alert(model_name, results)
-        
-        return results
+    Types of drift:
+    1. Data drift: Input distribution changes
+    2. Concept drift: Relationship between input/output changes
+    """
     
-    async def check_feature_drift(self, model_name: str, feature_name: str) -> dict:
-        recent = await self.get_recent_feature_values(model_name, feature_name)
-        baseline = self.baseline_distributions.get(f"{model_name}_{feature_name}")
+    def check_drift(self, model_name):
+        # Compare recent predictions vs training distribution
+        recent_predictions = get_predictions(model_name, last_24h)
+        training_distribution = get_training_distribution(model_name)
         
-        if not baseline:
-            return {'drift_detected': False, 'reason': 'no_baseline'}
+        # KS test for distribution comparison
+        ks_statistic, p_value = ks_test(
+            recent_predictions,
+            training_distribution
+        )
         
-        # Population Stability Index (PSI)
-        psi = self.calculate_psi(baseline, recent)
+        if p_value < 0.05:
+            alert(f"Model {model_name} shows significant drift!")
+            return True
         
-        return {
-            'psi': psi,
-            'drift_detected': psi > 0.2,  # PSI > 0.2 indicates significant drift
-            'severity': 'high' if psi > 0.25 else 'medium' if psi > 0.1 else 'low'
-        }
-    
-    def calculate_psi(self, expected: List[float], actual: List[float], buckets: int = 10) -> float:
-        # Bin the data
-        breakpoints = np.percentile(expected, np.linspace(0, 100, buckets + 1))
-        
-        expected_percents = np.histogram(expected, breakpoints)[0] / len(expected)
-        actual_percents = np.histogram(actual, breakpoints)[0] / len(actual)
-        
-        # Avoid log(0)
-        expected_percents = np.clip(expected_percents, 0.0001, 1)
-        actual_percents = np.clip(actual_percents, 0.0001, 1)
-        
-        psi = np.sum((actual_percents - expected_percents) * np.log(actual_percents / expected_percents))
-        
-        return psi
+        return False
 ```
 
-**7. Model Registry (MLflow Integration)**
+### 🗄️ Model Registry Schema
+
+```sql
+-- ML Model Registry - tracks all model versions
+CREATE TABLE ml_models (
+    id BIGSERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,            -- 'recommendation_v1'
+    version VARCHAR(50) NOT NULL,          -- 'v2.3.1'
+    
+    -- Model artifacts
+    artifact_path VARCHAR(500) NOT NULL,   -- S3/GCS path to model file
+    artifact_size_mb INT,
+    framework VARCHAR(50) NOT NULL,        -- pytorch, tensorflow, sklearn
+    
+    -- Training info
+    training_dataset VARCHAR(500),
+    training_metrics JSONB,                -- {'accuracy': 0.92, 'f1': 0.89}
+    hyperparameters JSONB,
+    trained_at TIMESTAMP,
+    trained_by VARCHAR(100),
+    
+    -- Deployment status
+    status VARCHAR(20) DEFAULT 'REGISTERED', -- registered, staging, production, deprecated
+    promoted_at TIMESTAMP,
+    deprecated_at TIMESTAMP,
+    
+    -- A/B test info
+    traffic_percent INT DEFAULT 0,          -- 0-100
+    ab_test_id VARCHAR(100),
+    
+    -- Metadata
+    description TEXT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    
+    CONSTRAINT unique_model_version UNIQUE (name, version)
+);
+
+-- Model deployment history
+CREATE TABLE model_deployments (
+    id BIGSERIAL PRIMARY KEY,
+    model_id BIGINT NOT NULL REFERENCES ml_models(id),
+    
+    environment VARCHAR(20) NOT NULL,       -- staging, production
+    action VARCHAR(20) NOT NULL,            -- deploy, rollback, scale
+    
+    previous_version VARCHAR(50),
+    new_version VARCHAR(50) NOT NULL,
+    
+    traffic_before INT,
+    traffic_after INT,
+    
+    deployed_by VARCHAR(100),
+    deployed_at TIMESTAMP DEFAULT NOW(),
+    rollback_at TIMESTAMP,
+    rollback_reason TEXT
+);
+
+-- Model predictions log (for monitoring)
+CREATE TABLE model_predictions (
+    model_id BIGINT NOT NULL,
+    prediction_time TIMESTAMP NOT NULL,
+    
+    -- Request
+    request_id UUID NOT NULL,
+    features_hash VARCHAR(64),              -- Hash of input features
+    
+    -- Prediction
+    prediction JSONB NOT NULL,
+    confidence FLOAT,
+    latency_ms INT,
+    
+    -- Ground truth (filled later)
+    actual_outcome JSONB,
+    labeled_at TIMESTAMP,
+    
+    -- For drift detection
+    feature_stats JSONB                     -- Summary stats of features
+) PARTITION BY RANGE (prediction_time);
+```
+
+### 📊 A/B Testing Pattern
 
 ```python
-import mlflow
-from mlflow.tracking import MlflowClient
-
-class ModelRegistry:
-    def __init__(self):
-        self.client = MlflowClient()
-        mlflow.set_tracking_uri("http://mlflow-server:5000")
+class ModelABTest:
+    """
+    A/B test multiple model versions with traffic splitting.
+    """
     
-    async def register_model(self, model_name: str, model_path: str, metrics: dict):
-        # Log model to MLflow
-        with mlflow.start_run():
-            mlflow.log_metrics(metrics)
-            
-            model_uri = mlflow.register_model(
-                model_uri=model_path,
-                name=model_name
-            )
-            
-            return model_uri
+    def __init__(self, redis):
+        self.redis = redis
+        self.models = {}  # version -> model instance
     
-    async def promote_model(self, model_name: str, version: int, stage: str):
-        # Stages: Staging, Production, Archived
-        self.client.transition_model_version_stage(
-            name=model_name,
-            version=version,
-            stage=stage
-        )
-    
-    async def download(self, model_name: str, version: str) -> dict:
-        if version == "latest":
-            version = self.get_latest_version(model_name)
+    async def predict(self, model_name: str, features: dict, user_id: str):
+        """
+        Route prediction to appropriate model version based on:
+        1. Explicit test assignment
+        2. Traffic percentage
+        """
         
-        model_version = self.client.get_model_version(model_name, version)
+        # Check if user already assigned to a variant
+        assignment_key = f"ab:{model_name}:{user_id}"
+        assigned_version = await self.redis.get(assignment_key)
         
-        # Download artifact
-        local_path = mlflow.artifacts.download_artifacts(
-            artifact_uri=model_version.source
+        if not assigned_version:
+            # Assign based on traffic percentages
+            assigned_version = self._select_version(model_name, user_id)
+            await self.redis.setex(assignment_key, 86400, assigned_version)
+        
+        # Get the model and predict
+        model = self.models[assigned_version]
+        
+        start = time.time()
+        prediction = model.predict(features)
+        latency_ms = (time.time() - start) * 1000
+        
+        # Log for analysis
+        await self._log_prediction(
+            model_name=model_name,
+            version=assigned_version,
+            user_id=user_id,
+            features=features,
+            prediction=prediction,
+            latency_ms=latency_ms
         )
         
         return {
-            'path': local_path,
-            'framework': model_version.tags.get('framework', 'unknown'),
-            'version': version
+            'prediction': prediction,
+            'model_version': assigned_version,
+            'latency_ms': latency_ms
         }
     
-    def get_latest_version(self, model_name: str) -> str:
-        versions = self.client.get_latest_versions(model_name, stages=["Production"])
-        if versions:
-            return versions[0].version
-        return "1"
+    def _select_version(self, model_name: str, user_id: str) -> str:
+        """
+        Deterministic assignment based on user_id hash.
+        Ensures same user always gets same variant.
+        """
+        config = self.get_ab_config(model_name)
+        
+        # Hash user_id to 0-100
+        bucket = hash(user_id) % 100
+        
+        # Assign to variant based on traffic %
+        cumulative = 0
+        for version, percent in config.items():
+            cumulative += percent
+            if bucket < cumulative:
+                return version
+        
+        return config['default']
 ```
 
-**8. Auto-Scaling**
+## 📊 Observability (Serving + ML Quality)
 
-```python
-class ModelAutoScaler:
-    def __init__(self):
-        self.metrics_client = PrometheusClient()
-        self.kubernetes = KubernetesClient()
-    
-    async def check_scaling(self, model_name: str):
-        # Get current metrics
-        metrics = await self.get_model_metrics(model_name)
-        
-        current_replicas = await self.get_current_replicas(model_name)
-        
-        # Scale based on latency and request rate
-        target_replicas = self.calculate_target_replicas(metrics, current_replicas)
-        
-        if target_replicas != current_replicas:
-            await self.scale(model_name, target_replicas)
-    
-    def calculate_target_replicas(self, metrics: dict, current: int) -> int:
-        # Target: p99 latency < 10ms, requests per replica < 100/s
-        
-        if metrics['latency_p99'] > 15:
-            # Scale up
-            return min(current + 2, 20)  # Max 20 replicas
-        elif metrics['latency_p99'] < 5 and current > 2:
-            # Scale down
-            return max(current - 1, 2)  # Min 2 replicas
-        
-        # Scale based on request rate
-        requests_per_replica = metrics['request_rate'] / current
-        
-        if requests_per_replica > 100:
-            return min(int(current * 1.5), 20)
-        elif requests_per_replica < 30 and current > 2:
-            return max(current - 1, 2)
-        
-        return current
-    
-    async def scale(self, model_name: str, replicas: int):
-        await self.kubernetes.scale_deployment(
-            namespace='ml-serving',
-            deployment=f'{model_name}-serving',
-            replicas=replicas
-        )
-        
-        # Log scaling event
-        await self.log_scaling_event(model_name, replicas)
-```
+Serving SLO metrics:
+- `inference_latency_ms{model,version}` (p50/p95/p99)
+- `inference_errors_total{model,reason}`
+- `feature_fetch_latency_ms` + `feature_cache_hit_rate`
+- `gpu_utilization`, `gpu_oom_total`, `container_restarts_total`
 
-**9. Monitoring & Observability**
-
-```python
-from prometheus_client import Counter, Histogram, Gauge
-
-class ModelMetrics:
-    def __init__(self):
-        self.prediction_count = Counter(
-            'model_predictions_total',
-            'Total predictions',
-            ['model_name', 'version']
-        )
-        self.prediction_latency = Histogram(
-            'model_prediction_latency_seconds',
-            'Prediction latency',
-            ['model_name', 'version'],
-            buckets=[.001, .005, .01, .025, .05, .1, .25, .5, 1]
-        )
-        self.prediction_errors = Counter(
-            'model_prediction_errors_total',
-            'Prediction errors',
-            ['model_name', 'version', 'error_type']
-        )
-        self.model_memory = Gauge(
-            'model_memory_bytes',
-            'Model memory usage',
-            ['model_name', 'version']
-        )
-    
-    def record_prediction(self, model_name: str, version: str, latency: float, success: bool):
-        self.prediction_count.labels(model_name, version).inc()
-        self.prediction_latency.labels(model_name, version).observe(latency)
-        
-        if not success:
-            self.prediction_errors.labels(model_name, version, 'inference_error').inc()
-    
-    async def export_to_dashboard(self, model_name: str):
-        return {
-            'total_predictions': self.prediction_count.labels(model_name).get(),
-            'avg_latency_ms': self.prediction_latency.labels(model_name).observe() * 1000,
-            'error_rate': self.prediction_errors.labels(model_name).get() / 
-                         max(self.prediction_count.labels(model_name).get(), 1),
-            'memory_mb': self.model_memory.labels(model_name).get() / (1024 * 1024)
-        }
-```
-
-**10. Batch Inference Pipeline**
-
-```python
-class BatchInference:
-    def __init__(self):
-        self.spark = SparkSession.builder.appName("BatchInference").getOrCreate()
-    
-    async def run_batch_predictions(self, model_name: str, input_path: str, output_path: str):
-        # Load model
-        model = await model_server.get_model(model_name, "latest")
-        broadcast_model = self.spark.sparkContext.broadcast(model)
-        
-        # Load data
-        df = self.spark.read.parquet(input_path)
-        
-        # Define UDF for predictions
-        @udf(ArrayType(FloatType()))
-        def predict_udf(features):
-            return broadcast_model.value.predict(features).tolist()
-        
-        # Run predictions
-        result_df = df.withColumn(
-            "predictions",
-            predict_udf(col("features"))
-        )
-        
-        # Save results
-        result_df.write.parquet(output_path, mode="overwrite")
-        
-        # Log metrics
-        total_rows = result_df.count()
-        await self.log_batch_job(model_name, total_rows)
-        
-        return {
-            'status': 'completed',
-            'rows_processed': total_rows,
-            'output_path': output_path
-        }
-```
+Model quality/drift:
+- Prediction distribution stats (mean/std/quantiles)
+- Drift tests (KS/PSI) per feature + per output
+- Online metrics (CTR, conversion, fraud catch rate) split by variant
 
 ---
 
-## Tổng kết
+### ⚠️ Failure Scenarios & Handling
 
-Tài liệu này đã hoàn thành 10 câu hỏi system design (11-20) cho phỏng vấn NAVER:
+| Failure | Detection | Impact | Recovery |
+|---------|-----------|--------|----------|
+| **Model OOM** | Container killed | Predictions fail | Auto-restart, reduce batch size |
+| **Feature service down** | Timeout | No features | Use cached/default features |
+| **New model worse** | Metrics drop in A/B | User experience degrades | Auto-rollback when metrics < threshold |
+| **Training drift** | KS test fails | Predictions inaccurate | Alert ML team, retrain trigger |
+| **GPU unavailable** | Pod pending | No predictions | Fallback to CPU model (slower) |
 
-| # | Hệ thống | Highlights |
-|---|----------|------------|
-| 11 | Autocomplete | Trie, Redis caching, multilingual, personalization ML |
-| 12 | Payment Processing | Fraud detection, idempotency, double-entry ledger, PCI DSS |
-| 13 | Distributed Cache | LRU/LFU/TTL, consistent hashing, cache patterns |
-| 14 | Rate Limiter | Token bucket, sliding window, distributed limiting |
-| 15 | Video Transcoding | FFmpeg workers, HLS/DASH, auto-scaling, CDN |
-| 16 | Collaborative Editing | OT/CRDT, WebSocket, conflict resolution, offline sync |
-| 17 | Commenting System | Threading, moderation ML, spam detection, fan-out |
-| 18 | Location-Based Service | PostGIS, geohash sharding, routing A*, traffic |
-| 19 | Ad Serving | RTB auction, targeting, fraud detection, GDPR |
-| 20 | ML Model Serving | A/B testing, canary deploy, drift detection, MLflow |
+```python
+class ModelServingWithFallback:
+    """
+    Production model serving with graceful degradation.
+    """
+    
+    def __init__(self):
+        self.primary_model = load_model('v2.3.1', device='gpu')
+        self.fallback_model = load_model('v2.2.0', device='cpu')
+        self.default_predictions = load_defaults()
+        
+        self.circuit_breaker = CircuitBreaker(
+            failure_threshold=5,
+            recovery_timeout=30
+        )
+    
+    async def predict(self, features: dict):
+        # Try primary model
+        if self.circuit_breaker.is_closed():
+            try:
+                return await asyncio.wait_for(
+                    self.primary_model.predict(features),
+                    timeout=0.1  # 100ms timeout
+                )
+            except (TimeoutError, GPUError) as e:
+                self.circuit_breaker.record_failure()
+                logger.warning(f"Primary model failed: {e}")
+        
+        # Try fallback model
+        try:
+            return await self.fallback_model.predict(features)
+        except Exception as e:
+            logger.error(f"Fallback model failed: {e}")
+        
+        # Return cached/default predictions
+        return self.default_predictions.get(
+            features.get('category'),
+            self.default_predictions['global']
+        )
+```
+
+### 🌍 Real-World Case Study: Netflix Recommendations
+
+| Aspect | Netflix's Approach | Learning |
+|--------|-------------------|----------|
+| **Scale** | 250M members, billions of recommendations/day | Need massive parallelization |
+| **Latency** | <100ms for personalized row | Pre-compute + real-time hybrid |
+| **Models** | 100s of models in production | Each row/ranking is different model |
+| **A/B testing** | Always running 100+ tests | Every change is an experiment |
+| **Feature store** | Shared features across models | Consistency critical |
+
+**Their Stack:**
+- **Metaflow**: ML workflow orchestration  
+- **Feature Store**: Centralized feature management  
+- **Meson**: A/B testing platform  
+- **Model Registry**: Track all model versions  
+
+**Key Takeaways:**
+1. **Everything is an experiment** - Never ship without A/B test
+2. **Feature store is critical** - Training/serving skew kills models
+3. **Monitoring > Training** - Models in production need constant watching
+4. **Fallbacks everywhere** - Grace degradation when ML fails
+5. **Pre-compute when possible** - Real-time is expensive
+
+### 💡 Interview Tips for ML Systems
+
+**Common Questions:**
+1. *"How do you detect model degradation?"*
+   - Monitor prediction distribution (KS test)
+   - Track business metrics (CTR, conversion)
+   - Compare against holdout baseline
+
+2. *"Training vs Serving - what's different?"*
+   - Latency requirements
+   - Feature availability
+   - Batch vs single prediction
+
+3. *"How to roll back a bad model?"*
+   - Feature flags for instant switch
+   - Model registry with version history
+   - Automated rollback on metric drop
+
+**Red Flags:**
+❌ No A/B testing for model changes  
+❌ Different feature code for training/serving  
+❌ No monitoring for model drift  
+❌ No fallback for model failures
+
+# Tổng Kết
+
+## Quick Reference Table
+
+| # | System | Core Challenge | Key Concepts |
+|---|--------|----------------|--------------|
+| 11 | Autocomplete | Low latency search | Trie, Caching, Ranking |
+| 12 | Payment | Exactly-once | Idempotency, Saga, Ledger |
+| 13 | Cache | Distribution | Consistent Hash, Eviction |
+| 14 | Rate Limiter | Fairness | Token Bucket, Sliding Window |
+| 15 | Transcoding | Parallel processing | FFmpeg, HLS, Queue |
+| 16 | Collab Edit | Conflict resolution | OT, CRDT |
+| 17 | Comments | Scale writes | Fan-out, Moderation |
+| 18 | Location | Spatial query | Geohash, Quadtree |
+| 19 | Ad Serving | Real-time auction | RTB, Fraud detection |
+| 20 | ML Serving | Safe deployment | A/B, Feature Store, Drift |
+
+## Universal Interview Tips
+
+1. **Always clarify requirements first**
+2. **Do capacity estimation** (QPS, storage, bandwidth)
+3. **Start high-level, then deep dive**
+4. **Discuss trade-offs for every decision**
+5. **Consider failure scenarios**
+6. **Know when to stop and move on**
+
+---
+
+> 💡 **Cách học hiệu quả**: Với mỗi system, thử tự thiết kế TRƯỚC khi đọc solution. So sánh approach của bạn với solution để học từ differences.

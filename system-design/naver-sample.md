@@ -6270,6 +6270,10 @@ suite.expect_column_values_to_be_in_set("event_type", ["view", "click", "purchas
 
 ### Common Interview Follow-up Questions
 
+### Extended Practice (11–20)
+
+If you want more drills in the same style, see: [naver-sample-extended-11-20.md](naver-sample-extended-11-20.md).
+
 | System | Likely Follow-up Questions |
 |--------|---------------------------|
 | **Messaging** | "How do you handle message ordering?", "What about E2EE?" |

@@ -273,6 +273,14 @@ Client → Upload Service → S3 → CDN
 - Alerts: High latency (>1s), connection drops, Kafka lag
 - Distributed tracing: Track message journey across services
 
+### Technical Improvements / Interview Hardening
+
+- **Per-conversation ordering**: Partition Kafka by `conversation_id` để giữ ordering trong 1 conversation; Cassandra clustering key theo `message_id` (time-ordered).
+- **Idempotency & dedup**: Deduplicate server-side bằng `message_id` (idempotency store + TTL) để giảm phụ thuộc client; làm rõ retry + ACK semantics.
+- **Backpressure & overload**: Khi Kafka lag/DB throttling: shed-load theo user, rate limit theo conversation, circuit breaker, retry + jitter để tránh retry storm.
+- **Presence correctness**: Session TTL + heartbeat; xử lý WS server crash bằng lease/ownership trong Redis và rebind connection.
+- **Media security**: Signed upload URL, virus/malware scan, quota per user; CDN tokenization để hạn chế hotlink.
+
 ---
 
 ## 2. Design a Content Recommendation System (WEBTOON)
@@ -695,6 +703,14 @@ experiments = {
 - Feature store: Precompute và cache features
 - Approximate Nearest Neighbors (ANN): FAISS for similarity search
 - Distributed training: Horovod for multi-GPU
+
+### Technical Improvements / Interview Hardening
+
+- **Online/Offline feature skew**: Dùng cùng feature definitions (Feast) + validation; đảm bảo training-serving parity và backfill strategy.
+- **Model ops**: Canary/rollback theo model version; theo dõi drift (CTR/embedding) + latency budget (p99) cho inference.
+- **Exploration vs exploitation**: Bandit (epsilon-greedy/UCB/Thompson) cho discovery; guardrail metrics để tránh giảm chất lượng.
+- **ANN index refresh**: Quy trình rebuild/incremental update FAISS + warmup; fallback sang CF/trending khi index stale/unavailable.
+- **Privacy**: Pseudonymize `user_id`, retention theo loại event; xử lý opt-out (không thu thập/không dùng cho personalization) rõ ràng.
 
 ---
 
@@ -1146,6 +1162,14 @@ if spam_score > 0.8:
 - **Auto-scaling**: Scale query servers based on QPS
 - **Index partitioning**: Separate indices for different content types (news, images, videos)
 - **Cost optimization**: Use tiered storage (SSD for hot data, HDD for cold)
+
+### Technical Improvements / Interview Hardening
+
+- **Freshness & cache invalidation**: Incremental indexing + index versioning; invalidate query cache theo index generation/version để giảm stale cho hot queries.
+- **Shard query optimization**: Query broker hỗ trợ early-terminate, topK merge (heap) + timeout budget per shard.
+- **Hybrid lexical + semantic**: BM25 candidates + vector re-rank (RRF/weighted fusion); fallback khi vector index unavailable.
+- **Anti-abuse hardening**: Rate limit theo IP/AS, bot detection, spam classifier pipeline + human review loop cho false positives.
+- **Crawler safety**: Politeness per domain, adaptive crawl budget, quarantine đối với domains lỗi/timeout.
 
 ---
 
@@ -1647,6 +1671,14 @@ def cleanup_expired_links():
 - Deploy in multiple regions
 - Route based on geography
 - Eventual consistency acceptable
+
+### Technical Improvements / Interview Hardening
+
+- **Hot key & stampede**: Request coalescing, negative caching cho 404, async refresh + jitter TTL để tránh thundering herd.
+- **Redirect correctness**: 301 vs 302 theo use-case; set cache headers phù hợp; protect open redirect bằng allowlist/sanitization.
+- **Abuse controls**: Domain reputation/blacklist sync, phishing/malware scan async; CAPTCHA cho bursty clients.
+- **Data model & sharding**: Nếu shard MySQL theo `short_code`, nêu rõ reshard strategy và unique constraint per shard.
+- **Analytics quality**: Bot filtering (UA/referrer), sampling cho high-volume, privacy (IP anonymization).
 
 ---
 
@@ -2190,6 +2222,14 @@ def send_with_experiment(notification):
     send_notification(notification)
     log_experiment_event(experiment, variant, "sent")
 ```
+
+### Technical Improvements / Interview Hardening
+
+- **Priority lanes**: Tách topic/queue cho transactional vs promotional để OTP/password reset không bị nghẽn bởi marketing.
+- **Idempotency end-to-end**: `notification_id`/idempotency key từ gateway → consumer → provider; retry không gửi trùng.
+- **Provider feedback loop**: Cleanup device tokens invalid/unregistered; backoff + jitter; quota theo provider.
+- **Scheduling/quiet hours**: Dùng `scheduled_at` + delayed queue (hoặc requeue có kiểm soát) để tránh polling và đảm bảo timezone.
+- **DLQ & replay**: DLQ có reason code; replay rate-limited và có dedup để tránh “bùng nổ” gửi lại.
 
 ---
 
@@ -2782,6 +2822,14 @@ def optimize_storage(vod):
     elif vod.views < 1000 and vod.age > 7:
         move_to_ia(vod)
 ```
+
+### Technical Improvements / Interview Hardening
+
+- **Latency tiers**: Nêu rõ: HLS thường ~4–10s (tuỳ segment/player/CDN); LL-HLS ~2–4s; WebRTC ~0.5–1s và tiêu chí chọn theo interactivity/audience.
+- **Origin protection**: Origin shield + request collapsing; warm cache cho streams hot để giảm cache miss storm.
+- **Chat at scale**: Redis Pub/Sub cho realtime broadcast; history/replay nên tách (Kafka/DB) để hỗ trợ multi-region + late join.
+- **DRM/anti-piracy**: Signed playback URL, token rotation, watermarking; rate limit segment download.
+- **Backpressure**: Autoscale transcoding theo queue depth; degrade bitrate ladder khi thiếu GPU/overload.
 
 ---
 
@@ -3436,6 +3484,14 @@ def search_with_cache(query, filters):
     return results
 ```
 
+### Technical Improvements / Interview Hardening
+
+- **Inventory reservation TTL**: Reserve stock phải có lease/TTL + idempotency theo `order_id` để tránh “kẹt stock”.
+- **Saga/Outbox**: Order/Payment/Inventory dùng outbox pattern + saga để chịu được retry/failure nhất quán.
+- **Flash sale**: Pre-decrement Redis Lua + queue; per-user limit; async payment; chống oversell.
+- **Search/index freshness**: Stock/price change phát event để update Elasticsearch near real-time + invalidate cache.
+- **Fraud latency budget**: Rules trước (fast), ML sau (async/manual review) cho borderline để giữ checkout p99.
+
 ---
 
 ## 8. Design a Social Feed System (LINE Timeline)
@@ -4015,6 +4071,14 @@ def get_viral_post(post_id):
 - **Cache Warming**: Precompute feeds for active users
 - **Rate Limiting**: Limit post creation to prevent spam
 - **CDN**: Serve media from CDN
+
+### Technical Improvements / Interview Hardening
+
+- **Data modeling (Cassandra)**: Hạn chế secondary index ở quy mô lớn; thiết kế table theo access pattern (partition by `user_id`, clustering by time).
+- **Privacy/visibility**: Enforce audience (friends/private) trong feed generation; cache key include visibility/version.
+- **Delete/undo propagation**: Tombstone + cache invalidation + fanout compensation (remove feed items) theo event.
+- **Graph store**: Nêu rõ social graph store (DB + cache) và SLA; batch fetch follows để giảm N+1.
+- **Moderation**: Pipeline kiểm duyệt (text/image) + quarantine; bảo vệ ranking khỏi spam/abuse.
 
 ---
 
@@ -4712,6 +4776,14 @@ def delete_user_account(user_id):
     # Schedule data deletion after 30 days
     schedule_task('hard_delete_user', user_id, delay_days=30)
 ```
+
+### Technical Improvements / Interview Hardening
+
+- **Password hashing hardening**: Ưu tiên Argon2id/scrypt (kèm pepper) hơn PBKDF2 (tuỳ chuẩn nội bộ); rate limit + adaptive friction theo risk.
+- **Token revocation strategy**: Access token short-lived + refresh rotation; denylist cho high-risk; session-bound refresh token.
+- **Risk-based auth**: Device fingerprint + impossible travel + TOR/VPN signals; step-up 2FA cho login rủi ro.
+- **Web security**: Nếu dùng cookie/session: CSRF protection; chống session fixation; secure cookie flags.
+- **Abuse & account takeover**: Credential stuffing defense (IP reputation, bot detection), breached-password checks, audit trail.
 
 ---
 
@@ -5591,6 +5663,14 @@ storage_config = {
 - Tiered storage: Hot/warm/cold based on access patterns
 - Precomputed aggregations: Reduce query costs
 - Spot instances: 70% cost reduction for batch jobs
+
+### Technical Improvements / Interview Hardening
+
+- **Processing guarantees**: Semantics phụ thuộc connector/sink; dùng `event_id` dedup + idempotent sink để giảm double-count.
+- **Late events & watermarking**: Chính sách xử lý late-arriving (allowed lateness/retractions) + backfill strategy cho báo cáo.
+- **Schema evolution**: Schema Registry + versioning; contract tests để tránh breaking change trên pipeline.
+- **Data quality**: Checks (null/dup/freshness) + alerting; quarantine topic cho event lỗi; sampling để debug.
+- **Governance & privacy**: PII tagging, access control theo role, retention theo lớp dữ liệu (raw/curated) + audit.
 
 ---
 

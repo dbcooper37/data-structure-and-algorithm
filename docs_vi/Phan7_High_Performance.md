@@ -677,14 +677,298 @@ for (int i = 0; i < 10; i++) {
 - **Global order** (toàn bộ messages) → Chỉ có thể dùng 1 partition
 - **Partial order** (messages cùng key) → Dùng key-based partitioning (khuyến nghị)
 
-#### 4. Message Accumulation (Ùn ứ tin nhắn)
+#### 4. ⭐ Message Delay & Expired Messages (Tin nhắn trễ & Hết hạn)
 
-Consumer xử lý chậm hoặc chết, tin dồn đống hàng triệu cái.
-*   **Fix khẩn cấp**:
-    1.  Tạm dừng Consumer cũ.
-    2.  Viết Consumer mới, chỉ làm nhiệm vụ: **Lấy tin → Gửi ngay sang 10 Queues mới**.
-    3.  Bật 10 Consumers (Worker) để xử lý song song 10 queues kia.
-    4.  Khi hết tồn đọng, quay lại kiến trúc cũ.
+**Vấn đề**: Consumer xử lý chậm → Messages tích tụ → Một số messages hết TTL (Time To Live) → Mất data.
+
+**Scenario 1: Message Queue đầy (Disk gần hết)**
+
+**Vấn đề**: Messages tích tụ quá nhiều, disk gần đầy.
+
+**Giải pháp khẩn cấp**:
+1. **Tạm dừng Producer**: Ngừng gửi messages mới
+2. **Tăng Consumer**: Scale up consumers để xử lý nhanh hơn
+3. **Temporary Consumer**: Viết consumer tạm chỉ làm nhiệm vụ:
+   - Lấy messages từ queue cũ
+   - **Không xử lý business logic** (skip expensive operations)
+   - Gửi ngay sang **10 queues mới** (sharding)
+4. **Scale Workers**: Bật 10x consumers để xử lý 10 queues mới song song
+5. **Recover**: Sau khi hết tồn đọng, quay lại kiến trúc cũ
+
+**Diagram (Message Accumulation Solution)**:
+```mermaid
+graph TD
+    A[Original Queue<br/>10M messages] -->|Emergency| B[Temporary Consumer]
+    B -->|Distribute| C1[Queue 1]
+    B -->|Distribute| C2[Queue 2]
+    B -->|Distribute| C3[Queue 3]
+    B -->|Distribute| C10[Queue 10]
+    
+    C1 -->|10x Workers| D1[Consumer Group 1]
+    C2 -->|10x Workers| D2[Consumer Group 2]
+    C10 -->|10x Workers| D10[Consumer Group 10]
+    
+    style B fill:#ffd43b
+    style C1 fill:#51cf66
+    style C10 fill:#51cf66
+```
+
+**Scenario 2: Messages hết TTL (RabbitMQ)**
+
+**Vấn đề**: RabbitMQ có TTL (Time To Live). Messages tích tụ quá lâu → TTL hết → Messages bị xóa → **Mất data**.
+
+**Ví dụ thực tế**:
+- 10,000 orders trong queue, chưa xử lý
+- TTL = 1 giờ
+- Sau 1 giờ → 1,000 orders bị xóa (mất data)
+
+**Giải pháp: Batch Re-import (Khuyến nghị)**
+
+**Khi messages đã bị xóa**:
+1. **Tạm thời bỏ qua**: Không thể recover messages đã mất
+2. **Batch re-import**: Viết script để:
+   - Query database tìm các orders chưa được xử lý (dựa vào status)
+   - Re-send messages vào queue
+   - Consumer xử lý lại
+
+**Code Example (Batch Re-import)**:
+```java
+// Tìm orders chưa được xử lý
+List<Order> pendingOrders = orderDao.findByStatus("PENDING");
+
+// Re-send vào queue
+for (Order order : pendingOrders) {
+    OrderMessage msg = new OrderMessage(order.getId(), order.getAmount());
+    rabbitTemplate.convertAndSend("order.queue", msg);
+    logger.info("Re-sent order: {}", order.getId());
+}
+```
+
+**Prevention (Phòng ngừa)**:
+- **Monitor queue size**: Alert khi queue > threshold
+- **Set TTL dài hơn**: TTL = 24h thay vì 1h (trade-off: tốn disk)
+- **Auto-scaling consumers**: Tự động scale khi queue tăng
+
+**Scenario 3: RocketMQ Message Accumulation**
+
+**RocketMQ cung cấp các giải pháp chính thức**:
+
+**1. Tăng Consumer Parallelism**
+```java
+// Tăng số lượng consumer instances
+// Hoặc tăng consumeThreadMin, consumeThreadMax
+DefaultMQPushConsumer consumer = new DefaultMQPushConsumer("group");
+consumer.setConsumeThreadMin(20);  // Min threads
+consumer.setConsumeThreadMax(64);  // Max threads
+```
+
+**2. Batch Consumption**
+```java
+// Consumer xử lý nhiều messages cùng lúc
+consumer.setConsumeMessageBatchMaxSize(10);  // Xử lý 10 messages/batch
+```
+
+**3. Skip Non-Critical Messages**
+```java
+public ConsumeConcurrentlyStatus consumeMessage(
+        List<MessageExt> msgs,
+        ConsumeConcurrentlyContext context) {
+    long offset = msgs.get(0).getQueueOffset();
+    String maxOffset = msgs.get(0).getProperty(Message.PROPERTY_MAX_OFFSET);
+    long diff = Long.parseLong(maxOffset) - offset;
+    
+    // Nếu queue tích tụ > 100,000 messages → Skip
+    if (diff > 100000) {
+        logger.warn("Queue backlog too large: {}, skipping messages", diff);
+        return ConsumeConcurrentlyStatus.CONSUME_SUCCESS;  // Skip
+    }
+    
+    // Normal processing
+    processMessages(msgs);
+    return ConsumeConcurrentlyStatus.CONSUME_SUCCESS;
+}
+```
+
+**4. Optimize Message Processing**
+- **Reduce DB queries**: Batch queries thay vì query từng message
+- **Use SSD**: Deploy DB trên SSD để giảm I/O latency
+- **Cache**: Cache frequently accessed data
+
+**Best Practices Summary**:
+1. ✅ **Monitor queue size**: Alert khi > threshold
+2. ✅ **Auto-scaling**: Tự động scale consumers khi queue tăng
+3. ✅ **Set appropriate TTL**: Đủ dài để xử lý, không quá dài để tốn disk
+4. ✅ **Batch processing**: Xử lý nhiều messages cùng lúc
+5. ✅ **Optimize processing logic**: Giảm DB queries, dùng cache
+
+#### 5. ⭐ Message Queue Design (Thiết kế Message Queue từ đầu)
+
+**Câu hỏi**: Nếu phải thiết kế một Message Queue từ đầu, bạn sẽ làm như thế nào?
+
+**Đây là câu hỏi mở, kiểm tra**:
+- Hiểu biết về nguyên lý MQ (Kafka, RabbitMQ)
+- Khả năng thiết kế hệ thống
+- Tư duy architecture
+
+**Các thành phần cốt lõi cần thiết kế**:
+
+##### 5.1. Scalability (Khả năng mở rộng)
+
+**Vấn đề**: Làm sao MQ có thể scale khi traffic tăng?
+
+**Giải pháp: Distributed Architecture**
+
+**Thiết kế tương tự Kafka**:
+- **Broker**: Mỗi broker là một server độc lập
+- **Topic**: Category/feed name (ví dụ: "order-topic")
+- **Partition**: Topic được chia thành nhiều partitions (parallelism)
+
+**Architecture**:
+```
+Topic: order-topic
+├── Partition 0 (Broker 1)
+├── Partition 1 (Broker 2)
+├── Partition 2 (Broker 3)
+└── Partition 3 (Broker 1)
+```
+
+**Khi cần scale**:
+1. Tăng số partitions của topic
+2. Thêm brokers mới
+3. Rebalance partitions → Migrate data
+4. Kết quả: Tăng throughput và capacity
+
+**Code Example (Partition Assignment)**:
+```java
+// Hash key → Partition
+int partition = Math.abs(key.hashCode()) % numPartitions;
+// Messages cùng key → Cùng partition (đảm bảo order)
+```
+
+##### 5.2. Durability (Độ bền vững)
+
+**Vấn đề**: Làm sao đảm bảo messages không mất khi broker crash?
+
+**Giải pháp: Disk Persistence + Replication**
+
+**1. Disk Persistence**:
+- **Sequential Write**: Ghi messages tuần tự vào disk (không random write)
+- **Lý do**: Sequential write nhanh hơn random write 100x
+- **Format**: Append-only log (giống Kafka)
+
+**Code Example (Sequential Write)**:
+```java
+// Append message vào log file
+FileChannel channel = new RandomAccessFile("message.log", "rw").getChannel();
+ByteBuffer buffer = ByteBuffer.wrap(messageBytes);
+channel.write(buffer);  // Sequential append
+channel.force(true);    // Flush to disk
+```
+
+**2. Replication**:
+- Mỗi partition có N replicas (thường N=3)
+- **Leader**: Xử lý read/write
+- **Followers**: Replicate từ leader
+- **Leader election**: Khi leader chết → Elect follower mới
+
+**Architecture**:
+```
+Partition 0:
+├── Leader (Broker 1) ← Handles read/write
+├── Follower (Broker 2) ← Replicates
+└── Follower (Broker 3) ← Replicates
+```
+
+##### 5.3. High Availability (Tính khả dụng cao)
+
+**Vấn đề**: Làm sao MQ vẫn hoạt động khi broker chết?
+
+**Giải pháp: Replication + Leader Election**
+
+**Flow khi Leader chết**:
+1. **Detect failure**: Zookeeper/Consensus algorithm phát hiện leader chết
+2. **Elect new leader**: Chọn follower có data mới nhất
+3. **Reassign partitions**: Clients tự động reconnect đến leader mới
+4. **Continue service**: Service không bị gián đoạn
+
+**Consensus Algorithm**:
+- **Zookeeper**: Dùng cho Kafka (cũ)
+- **Raft**: Dùng cho Kafka (mới), etcd, Consul
+- **Paxos**: Dùng cho Google Chubby
+
+##### 5.4. Zero Data Loss (Không mất dữ liệu)
+
+**Vấn đề**: Làm sao đảm bảo messages không bao giờ mất?
+
+**Giải pháp: Producer + Broker + Consumer Guarantees**
+
+**Producer Side**:
+```java
+// Đợi tất cả replicas confirm
+props.put("acks", "all");
+// Retry vô hạn
+props.put("retries", Integer.MAX_VALUE);
+```
+
+**Broker Side**:
+```properties
+# Mỗi partition có 3 replicas
+replication.factor=3
+# Leader phải có ít nhất 2 replicas sync
+min.insync.replicas=2
+```
+
+**Consumer Side**:
+```java
+// Manual commit offset sau khi xử lý xong
+props.put("enable.auto.commit", "false");
+consumer.commitSync();  // Commit sau khi process
+```
+
+##### 5.5. Performance Optimization (Tối ưu hiệu năng)
+
+**1. Batch Processing**:
+- Producer gửi nhiều messages cùng lúc (batch)
+- Giảm network overhead
+
+**2. Compression**:
+- Compress messages trước khi gửi (gzip, snappy)
+- Giảm network bandwidth
+
+**3. Zero-Copy**:
+- Dùng `sendfile()` system call
+- Tránh copy data từ kernel → user space
+
+**4. Page Cache**:
+- OS cache file trong memory
+- Read từ memory nhanh hơn disk 100x
+
+**Summary - Message Queue Design Checklist**:
+
+✅ **Scalability**:
+- Distributed architecture (Broker, Topic, Partition)
+- Horizontal scaling (thêm brokers)
+
+✅ **Durability**:
+- Sequential write to disk
+- Replication (N replicas)
+
+✅ **High Availability**:
+- Leader-Follower model
+- Automatic failover
+
+✅ **Zero Data Loss**:
+- Producer: acks=all, retries
+- Broker: Replication, min ISR
+- Consumer: Manual commit
+
+✅ **Performance**:
+- Batch processing
+- Compression
+- Zero-copy
+- Page cache
+
+**Kết luận**: Thiết kế MQ là bài toán phức tạp, cần cân nhắc nhiều yếu tố. Tham khảo Kafka, RabbitMQ, RocketMQ để học hỏi best practices.
 
 ---
 
@@ -806,7 +1090,13 @@ Làm sao giữ Cache và DB khớp nhau?
 ✅ **7.1. Message Queue**:
 - Decoupling, Async, Peak Shaving.
 - Kafka vs RabbitMQ vs RocketMQ.
-- Problems: Message Loss, Duplicate, Order, Accumulation.
+- **Problems & Solutions**:
+  - **Message Loss**: Producer (Confirm/Transaction), Broker (Persistence), Consumer (Manual ACK)
+  - **Duplicate Messages**: Idempotent design (DB unique key, Redis set, Business logic)
+  - **Ordered Messages**: Key-based partitioning, Memory queue per key
+  - **Message Accumulation**: Emergency scaling, Temporary consumers, Batch re-import
+  - **Message Delay & Expired**: TTL handling, Batch re-import, Auto-scaling
+  - **Message Queue Design**: Scalability, Durability, HA, Zero data loss, Performance optimization
 
 ✅ **7.2. Caching Strategies**:
 - Cache-Aside (Standard), Read/Write Through, Write-Behind.
@@ -822,7 +1112,7 @@ Làm sao giữ Cache và DB khớp nhau?
 - Sharding (Vertical/Horizontal).
 - CDN basics.
 
-**Tổng cộng: ~1,200+ lines** các kỹ thuật tối ưu hóa hiệu năng hệ thống chi tiết, bao gồm code examples và best practices thực tế!
+**Tổng cộng: ~2,000+ lines** các kỹ thuật tối ưu hóa hiệu năng hệ thống chi tiết, bao gồm Message Queue reliability patterns, design principles, code examples và best practices thực tế!
 
 ---
 

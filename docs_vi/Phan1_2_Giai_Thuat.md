@@ -63,7 +63,7 @@ Sắp xếp nổi bọt là thuật toán đơn giản. Nó lặp đi lặp lạ
 
 ### 2.2. Hình ảnh minh họa
 
-![Bubble Sort](https://oss.javaguide.cn/github/javaguide/cs-basics/sorting-algorithms/bubble_sort.gif)
+![Bubble Sort](images/bubble_sort.gif)
 
 ### 2.3. Code Java
 
@@ -118,7 +118,7 @@ Sắp xếp chọn là thuật toán đơn giản và trực quan, luôn có đ�
 
 ### 3.2. Hình ảnh minh họa
 
-![Selection Sort](https://oss.javaguide.cn/github/javaguide/cs-basics/sorting-algorithms/selection_sort.gif)
+![Selection Sort](images/selection_sort.gif)
 
 ### 3.3. Code Java
 
@@ -170,7 +170,7 @@ Sắp xếp chèn là thuật toán đơn giản và trực quan. **Nguyên lý:
 
 ### 4.2. Hình ảnh minh họa
 
-![Insertion Sort](https://oss.javaguide.cn/github/javaguide/cs-basics/sorting-algorithms/insertion_sort.gif)
+![Insertion Sort](images/insertion_sort.gif)
 
 ### 4.3. Code Java
 
@@ -219,7 +219,7 @@ Chọn chuỗi tăng (increment sequence) `{n/2, (n/2)/2, ..., 1}` (gọi là "S
 
 ### 5.2. Hình ảnh minh họa
 
-![Shell Sort](https://oss.javaguide.cn/github/javaguide/cs-basics/sorting-algorithms/shell_sort.png)
+![Shell Sort](images/shell_sort.png)
 
 ### 5.3. Code Java
 
@@ -274,7 +274,7 @@ Merge Sort là quá trình đệ quy, điều kiện biên là khi dãy đầu v
 
 ### 6.2. Hình ảnh minh họa
 
-![Merge Sort](https://oss.javaguide.cn/github/javaguide/cs-basics/sorting-algorithms/merge_sort.gif)
+![Merge Sort](images/merge_sort.gif)
 
 ### 6.3. Code Java
 
@@ -347,7 +347,7 @@ Quick Sort sử dụng tư tưởng **Chia để Trị**, tương tự Merge Sor
 
 ### 7.2. Hình ảnh minh họa
 
-![Quick Sort](https://oss.javaguide.cn/github/javaguide/cs-basics/sorting-algorithms/random_quick_sort.gif)
+![Quick Sort](images/random_quick_sort.gif)
 
 ### 7.3. Code Java
 
@@ -429,7 +429,7 @@ Heap Sort sử dụng cấu trúc dữ liệu Heap để sắp xếp. Heap là c
 
 ### 8.2. Hình ảnh minh họa
 
-![Heap Sort](https://oss.javaguide.cn/github/javaguide/cs-basics/sorting-algorithms/heap_sort.gif)
+![Heap Sort](images/heap_sort.gif)
 
 ### 8.3. Code Java
 
@@ -505,7 +505,7 @@ Counting Sort sử dụng một mảng phụ C, trong đó phần tử thứ i l
 
 ### 9.2. Hình ảnh minh họa
 
-![Counting Sort](https://oss.javaguide.cn/github/javaguide/cs-basics/sorting-algorithms/counting_sort.gif)
+![Counting Sort](images/counting_sort.gif)
 
 ### 9.3. Phân tích thuật toán
 
@@ -528,7 +528,7 @@ Bucket Sort là phiên bản nâng cấp của Counting Sort. Nó sử dụng h�
 
 ### 10.2. Hình ảnh minh họa
 
-![Bucket Sort](https://oss.javaguide.cn/github/javaguide/cs-basics/sorting-algorithms/bucket_sort.gif)
+![Bucket Sort](images/bucket_sort.gif)
 
 ### 10.3. Phân tích thuật toán
 
@@ -554,7 +554,7 @@ Radix Sort cũng là thuật toán không so sánh, sắp xếp theo từng ch�
 
 ### 11.2. Hình ảnh minh họa
 
-![Radix Sort](https://oss.javaguide.cn/github/javaguide/cs-basics/sorting-algorithms/radix_sort.gif)
+![Radix Sort](images/radix_sort.gif)
 
 ### 11.3. Phân tích thuật toán
 
@@ -719,7 +719,7 @@ class Solution {
 
 Input: `(2 -> 4 -> 3) + (5 -> 6 -> 4)` → Output: `7 -> 0 -> 8` (vì 342 + 465 = 807)
 
-![Add Two Numbers](https://oss.javaguide.cn/github/javaguide/cs-basics/algorithms/34910956.jpg)
+![Add Two Numbers](images/34910956.jpg)
 
 **Ý tưởng:** Duyệt từ đầu hai danh sách liên kết (từ chữ số thấp nhất), cộng từng vị trí và theo dõi số nhớ (carry).
 
@@ -749,7 +749,7 @@ public ListNode addTwoNumbers(ListNode l1, ListNode l2) {
 
 > **Bài toán (Kiếm chỉ Offer):** Cho một danh sách liên kết, đảo ngược danh sách và xuất ra các phần tử.
 
-![Reverse Linked List](https://oss.javaguide.cn/github/javaguide/cs-basics/algorithms/81431871.jpg)
+![Reverse Linked List](images/81431871.jpg)
 
 **Ý tưởng:** Làm cho nút sau trỏ đến nút trước. Sử dụng biến `next` để lưu nút tiếp theo, tránh "đứt" danh sách.
 

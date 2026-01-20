@@ -10,7 +10,25 @@ Tài liệu này là bản dịch và biên soạn chi tiết từ nguồn JavaG
 
 Mô hình OSI (Open Systems Interconnection) là mô hình 7 tầng do ISO (International Organization for Standardization) đề xuất. Mỗi tầng tập trung làm một việc và sử dụng chức năng của tầng dưới.
 
-![Mô hình OSI 7 tầng](https://oss.javaguide.cn/github/javaguide/cs-basics/network/osi-7-model.png)
+```mermaid
+graph TB
+    subgraph "OSI 7 Layers Model"
+        L7[Layer 7: Application<br/>HTTP, FTP, SMTP]
+        L6[Layer 6: Presentation<br/>Encoding, Encryption]
+        L5[Layer 5: Session<br/>Session Management]
+        L4[Layer 4: Transport<br/>TCP, UDP]
+        L3[Layer 3: Network<br/>IP, Routing]
+        L2[Layer 2: Data Link<br/>MAC, Frame]
+        L1[Layer 1: Physical<br/>Bits, Cables]
+        
+        L7 --> L6
+        L6 --> L5
+        L5 --> L4
+        L4 --> L3
+        L3 --> L2
+        L2 --> L1
+    end
+```
 
 | Tầng | Tên | Chức năng |
 |------|-----|-----------|
@@ -32,7 +50,19 @@ Mô hình OSI (Open Systems Interconnection) là mô hình 7 tầng do ISO (Inte
 
 Mô hình TCP/IP là phiên bản đơn giản hóa của OSI, được sử dụng rộng rãi trong thực tế.
 
-![Mô hình TCP/IP 4 tầng](https://oss.javaguide.cn/github/javaguide/cs-basics/network/tcp-ip-4-model.png)
+```mermaid
+graph TB
+    subgraph "TCP/IP 4 Layers Model"
+        App[Application Layer<br/>HTTP, HTTPS, FTP, DNS, SMTP, SSH]
+        Trans[Transport Layer<br/>TCP, UDP]
+        Net[Network Layer / Internet<br/>IP, ICMP, ARP, NAT]
+        Link[Network Interface Layer<br/>Ethernet, WiFi, MAC]
+        
+        App --> Trans
+        Trans --> Net
+        Net --> Link
+    end
+```
 
 | Tầng TCP/IP | Tương ứng OSI | Giao thức phổ biến |
 |-------------|---------------|-------------------|
@@ -103,7 +133,23 @@ Kết hợp tầng Data Link và Physical của OSI:
 
 TCP là giao thức **hướng kết nối**, **đáng tin cậy**. Trước khi truyền dữ liệu, hai bên phải hoàn thành quy trình "bắt tay 3 bước".
 
-![TCP 3-way Handshake](https://oss.javaguide.cn/github/javaguide/cs-basics/network/tcp-shakes-hands-three-times.png)
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+    
+    Note over C: CLOSED → SYN_SENT
+    C->>S: SYN (seq=x)
+    
+    Note over S: LISTEN → SYN_RCVD
+    S->>C: SYN+ACK (seq=y, ack=x+1)
+    
+    Note over C: SYN_SENT → ESTABLISHED
+    C->>S: ACK (ack=y+1)
+    
+    Note over S: SYN_RCVD → ESTABLISHED
+    Note over C,S: Connection Established
+```
 
 **Các bước:**
 
@@ -137,7 +183,7 @@ Trong quá trình bắt tay 3 bước, server kernel sử dụng 2 hàng đợi:
 
 TCP là **full-duplex**, hai hướng truyền độc lập, nên cần 4 bước để đóng (mỗi bên thông báo "tôi hết gửi" và được xác nhận).
 
-![TCP 4-way Handshake](https://oss.javaguide.cn/github/javaguide/cs-basics/network/tcp-waves-four-times.png)
+![TCP 4-way Handshake](images/tcp-waves-four-times.png)
 
 **Các bước:**
 
@@ -201,7 +247,7 @@ Kích thước cửa sổ nhận động, thay đổi dựa trên tốc độ x�
 
 Khác với flow control (end-to-end), congestion control là vấn đề **toàn mạng**. TCP duy trì **cửa sổ tắc nghẽn (cwnd - congestion window)**.
 
-![TCP Congestion Control](https://oss.javaguide.cn/github/javaguide/cs-basics/network/tcp-congestion-control.png)
+![TCP Congestion Control](images/tcp-congestion-control.png)
 
 **4 thuật toán chính:**
 

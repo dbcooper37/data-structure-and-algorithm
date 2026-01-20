@@ -6,7 +6,534 @@ Tài liệu này bổ sung các kiến thức về xử lý dữ liệu quy mô 
 
 ## 10.1. Big Data Algorithms (Thuật toán Dữ liệu lớn)
 
-### 10.1.1. ⭐ TopK Problem (Bài toán Top K)
+### 10.1.1. ⭐ Classic Big Data Problems (Các bài toán Big Data kinh điển)
+
+#### Problem 1: Count Different Phone Numbers (Đếm số điện thoại khác nhau)
+
+**Vấn đề**: Có một file chứa các số điện thoại (8 chữ số), đếm số lượng số điện thoại khác nhau.
+
+**Constraints**:
+- Mỗi số điện thoại: 8 chữ số (0-9)
+- File quá lớn, không thể load hết vào memory
+
+**Solution: BitMap (Bit Array)**
+
+**Phân tích**:
+- 8 chữ số → Range: 0 - 99,999,999 (100 triệu số)
+- Mỗi số dùng 1 bit → Cần 100 triệu bits ≈ **12 MB**
+
+**Algorithm**:
+1. Tạo bit array kích thước 100 triệu bits
+2. Đọc từng số điện thoại từ file
+3. Set bit tại vị trí = số điện thoại = 1
+4. Đếm số bits = 1 → Kết quả
+
+**Code**:
+```java
+public class PhoneNumberCounter {
+    private BitSet bitSet;
+    private static final int MAX_PHONE = 100_000_000;  // 8 digits
+    
+    public PhoneNumberCounter() {
+        this.bitSet = new BitSet(MAX_PHONE);
+    }
+    
+    public void addPhoneNumber(int phoneNumber) {
+        bitSet.set(phoneNumber);
+    }
+    
+    public int countDistinct() {
+        return bitSet.cardinality();  // Count bits set to 1
+    }
+}
+
+// Usage
+PhoneNumberCounter counter = new PhoneNumberCounter();
+// Read from file line by line
+while ((line = reader.readLine()) != null) {
+    int phone = Integer.parseInt(line.trim());
+    counter.addPhoneNumber(phone);
+}
+int distinctCount = counter.countDistinct();
+```
+
+**Time Complexity**: O(n) - n là số lượng số điện thoại
+**Space Complexity**: O(1) - Cố định 12 MB
+
+**Key Insight**: **BitMap** rất hiệu quả cho bài toán **check existence** và **count distinct** khi range nhỏ.
+
+---
+
+#### Problem 2: Find a Number if Exists (Tìm số có tồn tại không)
+
+**Vấn đề**: Có 40 tỷ số nguyên không trùng lặp, chưa sắp xếp. Cho một số X, kiểm tra X có trong 40 tỷ số đó không?
+
+**Constraints**:
+- 40 tỷ số unsigned int (0 - 2^32-1)
+- Memory: 1GB
+- File quá lớn, không thể load hết
+
+**Solution: BitMap**
+
+**Phân tích**:
+- Unsigned int range: 0 - 4,294,967,295 (2^32)
+- Mỗi số dùng 1 bit → Cần 2^32 bits = 512 MB ✅ (nhỏ hơn 1GB)
+
+**Algorithm**:
+1. Tạo bit array kích thước 2^32 bits (512 MB)
+2. Đọc 40 tỷ số từ file, set bit tương ứng = 1
+3. Check số X: Nếu bit[X] = 1 → Tồn tại, ngược lại → Không tồn tại
+
+**Code**:
+```java
+public class NumberExistenceChecker {
+    private BitSet bitSet;
+    private static final long MAX_NUMBER = (1L << 32);  // 2^32
+    
+    public NumberExistenceChecker() {
+        this.bitSet = new BitSet((int) MAX_NUMBER);
+    }
+    
+    public void loadNumbers(String filePath) throws IOException {
+        try (BufferedReader reader = new BufferedReader(new FileReader(filePath))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                long number = Long.parseLong(line.trim());
+                bitSet.set((int) number);
+            }
+        }
+    }
+    
+    public boolean exists(long number) {
+        return bitSet.get((int) number);
+    }
+}
+```
+
+**Alternative: Bloom Filter** (Nếu range quá lớn)
+- Dùng khi range quá lớn, không thể dùng BitMap
+- Trade-off: Có false positive (nhưng không có false negative)
+- Space: Nhỏ hơn BitMap nhiều
+
+**Key Insight**: **BitMap** là giải pháp tối ưu cho bài toán **existence check** khi range vừa phải.
+
+---
+
+#### Problem 3: Find Common URLs (Tìm URLs chung)
+
+**Vấn đề**: Có 2 files (a và b), mỗi file chứa 50 tỷ URLs, mỗi URL 64 bytes. Memory: 4GB. Tìm URLs xuất hiện trong cả 2 files.
+
+**Constraints**:
+- 50 tỷ URLs × 64 bytes = 320 GB (quá lớn cho memory)
+- Memory chỉ có 4GB
+
+**Solution: Hash Partitioning (Phân vùng Hash)**
+
+**Algorithm**:
+
+**Step 1: Hash Partitioning**
+- Hash mỗi URL → Hash value
+- `hash(URL) % 1000` → Chia thành 1000 files nhỏ
+- URLs cùng hash → Cùng file (đảm bảo common URLs ở cùng partition)
+
+**Step 2: Process từng partition**
+- Load file a_i và b_i vào memory (mỗi file ~320MB)
+- Tìm intersection trong mỗi cặp file
+- Union kết quả từ tất cả partitions
+
+**Code**:
+```java
+public class CommonURLFinder {
+    private static final int NUM_PARTITIONS = 1000;
+    
+    // Step 1: Partition files
+    public void partitionFile(String inputFile, String outputDir) throws IOException {
+        List<BufferedWriter> writers = new ArrayList<>();
+        for (int i = 0; i < NUM_PARTITIONS; i++) {
+            writers.add(new BufferedWriter(new FileWriter(
+                outputDir + "/partition_" + i + ".txt")));
+        }
+        
+        try (BufferedReader reader = new BufferedReader(new FileReader(inputFile))) {
+            String url;
+            while ((url = reader.readLine()) != null) {
+                int partition = Math.abs(url.hashCode()) % NUM_PARTITIONS;
+                writers.get(partition).write(url);
+                writers.get(partition).newLine();
+            }
+        }
+        
+        for (BufferedWriter writer : writers) {
+            writer.close();
+        }
+    }
+    
+    // Step 2: Find common URLs in each partition
+    public Set<String> findCommonInPartition(String fileA, String fileB) throws IOException {
+        Set<String> setA = new HashSet<>();
+        
+        // Load file A into HashSet
+        try (BufferedReader reader = new BufferedReader(new FileReader(fileA))) {
+            String url;
+            while ((url = reader.readLine()) != null) {
+                setA.add(url);
+            }
+        }
+        
+        // Check file B against setA
+        Set<String> common = new HashSet<>();
+        try (BufferedReader reader = new BufferedReader(new FileReader(fileB))) {
+            String url;
+            while ((url = reader.readLine()) != null) {
+                if (setA.contains(url)) {
+                    common.add(url);
+                }
+            }
+        }
+        
+        return common;
+    }
+    
+    // Main method
+    public Set<String> findCommonURLs(String fileA, String fileB) throws IOException {
+        // Partition both files
+        partitionFile(fileA, "temp/partitions_a");
+        partitionFile(fileB, "temp/partitions_b");
+        
+        // Find common in each partition pair
+        Set<String> allCommon = new HashSet<>();
+        for (int i = 0; i < NUM_PARTITIONS; i++) {
+            Set<String> common = findCommonInPartition(
+                "temp/partitions_a/partition_" + i + ".txt",
+                "temp/partitions_b/partition_" + i + ".txt"
+            );
+            allCommon.addAll(common);
+        }
+        
+        return allCommon;
+    }
+}
+```
+
+**Time Complexity**: O(n) - n là tổng số URLs
+**Space Complexity**: O(n/k) - k là số partitions (chia nhỏ memory)
+
+**Optimization: Trie Tree** (Nếu URLs có nhiều prefix chung)
+- Dùng Trie để compress URLs
+- Giảm memory usage
+- Trade-off: Chậm hơn HashSet một chút
+
+**Key Insight**: **Hash Partitioning** là kỹ thuật cốt lõi để xử lý data lớn hơn memory.
+
+---
+
+#### Problem 4: Find Hottest Query String (Tìm query string phổ biến nhất)
+
+**Vấn đề**: Có 10 triệu query strings (mỗi string ≤ 255 bytes). Memory: 1GB. Tìm 10 query strings phổ biến nhất.
+
+**Constraints**:
+- 10 triệu strings × 255 bytes = 2.55 GB (lớn hơn memory)
+- Nhưng sau khi deduplicate: ≤ 3 triệu strings (777 MB) ✅
+
+**Solution 1: HashMap + Min Heap**
+
+**Algorithm**:
+1. Dùng HashMap đếm frequency: `Map<String, Integer>`
+2. Duyệt tất cả strings, update frequency
+3. Dùng Min Heap (kích thước 10) để giữ Top 10
+4. Duyệt HashMap, nếu frequency > heap min → Replace
+
+**Code**:
+```java
+public class TopKQueries {
+    public List<String> findTopKQueries(List<String> queries, int k) {
+        // Step 1: Count frequency
+        Map<String, Integer> frequency = new HashMap<>();
+        for (String query : queries) {
+            frequency.put(query, frequency.getOrDefault(query, 0) + 1);
+        }
+        
+        // Step 2: Min Heap để giữ Top K
+        PriorityQueue<Map.Entry<String, Integer>> minHeap = new PriorityQueue<>(
+            (a, b) -> a.getValue() - b.getValue()  // Min heap by frequency
+        );
+        
+        // Step 3: Maintain Top K
+        for (Map.Entry<String, Integer> entry : frequency.entrySet()) {
+            if (minHeap.size() < k) {
+                minHeap.offer(entry);
+            } else if (entry.getValue() > minHeap.peek().getValue()) {
+                minHeap.poll();
+                minHeap.offer(entry);
+            }
+        }
+        
+        // Step 4: Extract results
+        List<String> result = new ArrayList<>();
+        while (!minHeap.isEmpty()) {
+            result.add(minHeap.poll().getKey());
+        }
+        Collections.reverse(result);  // Reverse để có thứ tự giảm dần
+        
+        return result;
+    }
+}
+```
+
+**Time Complexity**: O(n + m log k)
+- n: Tổng số queries
+- m: Số unique queries
+- k: Top K (10)
+
+**Space Complexity**: O(m + k)
+
+**Solution 2: Trie Tree** (Nếu queries có nhiều prefix chung)
+
+**Lợi ích**:
+- Compress storage (chia sẻ prefix)
+- Giảm memory usage
+
+**Code**:
+```java
+class TrieNode {
+    Map<Character, TrieNode> children = new HashMap<>();
+    int count = 0;  // Frequency
+    String word = null;  // Full word at leaf
+}
+
+public class TopKQueriesTrie {
+    private TrieNode root = new TrieNode();
+    
+    public void insert(String query) {
+        TrieNode node = root;
+        for (char c : query.toCharArray()) {
+            node.children.putIfAbsent(c, new TrieNode());
+            node = node.children.get(c);
+        }
+        node.count++;
+        node.word = query;
+    }
+    
+    // DFS để collect all words với frequency
+    private void collectWords(TrieNode node, Map<String, Integer> frequency) {
+        if (node.word != null) {
+            frequency.put(node.word, node.count);
+        }
+        for (TrieNode child : node.children.values()) {
+            collectWords(child, frequency);
+        }
+    }
+    
+    public List<String> findTopK(int k) {
+        Map<String, Integer> frequency = new HashMap<>();
+        collectWords(root, frequency);
+        
+        // Dùng Min Heap như Solution 1
+        // ... (same as above)
+    }
+}
+```
+
+**Key Insight**: 
+- **HashMap** đơn giản, nhanh
+- **Trie** tiết kiệm memory khi có nhiều prefix chung
+
+---
+
+#### Problem 5: Find Top 1 IP (Tìm IP truy cập nhiều nhất)
+
+**Vấn đề**: Có file log rất lớn, mỗi dòng chứa IP address. Tìm IP xuất hiện nhiều nhất trong một ngày.
+
+**Solution: Hash Partitioning + HashMap**
+
+**Algorithm**:
+1. **Filter by date**: Chỉ lấy logs của ngày cần tìm
+2. **Hash partitioning**: Hash IP → Chia thành N partitions
+3. **Count frequency**: Mỗi partition dùng HashMap đếm frequency
+4. **Merge**: Tìm IP có frequency cao nhất từ tất cả partitions
+
+**Code**:
+```java
+public class TopIPFinder {
+    private static final int NUM_PARTITIONS = 100;
+    
+    public String findTopIP(String logFile, String targetDate) throws IOException {
+        Map<String, Integer>[] partitionCounts = new Map[NUM_PARTITIONS];
+        for (int i = 0; i < NUM_PARTITIONS; i++) {
+            partitionCounts[i] = new HashMap<>();
+        }
+        
+        // Step 1: Filter by date và count frequency
+        try (BufferedReader reader = new BufferedReader(new FileReader(logFile))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                String[] parts = line.split(" ");
+                String date = parts[0];
+                String ip = parts[1];
+                
+                if (date.equals(targetDate)) {
+                    int partition = Math.abs(ip.hashCode()) % NUM_PARTITIONS;
+                    partitionCounts[partition].put(ip, 
+                        partitionCounts[partition].getOrDefault(ip, 0) + 1);
+                }
+            }
+        }
+        
+        // Step 2: Merge và tìm max
+        String topIP = null;
+        int maxCount = 0;
+        
+        for (Map<String, Integer> partition : partitionCounts) {
+            for (Map.Entry<String, Integer> entry : partition.entrySet()) {
+                if (entry.getValue() > maxCount) {
+                    maxCount = entry.getValue();
+                    topIP = entry.getKey();
+                }
+            }
+        }
+        
+        return topIP;
+    }
+}
+```
+
+**Key Insight**: **Hash partitioning** giúp xử lý file lớn bằng cách chia nhỏ và xử lý từng phần.
+
+---
+
+#### Problem 6: Find Top 100 Words (Tìm 100 từ phổ biến nhất)
+
+**Vấn đề**: File 1GB, mỗi dòng là một từ (≤ 16 bytes). Memory: 1MB. Tìm 100 từ xuất hiện nhiều nhất.
+
+**Constraints**:
+- File: 1GB
+- Memory: 1MB (rất nhỏ)
+- Mỗi từ ≤ 16 bytes
+
+**Solution: Hash Partitioning + Min Heap**
+
+**Algorithm**:
+
+**Step 1: Hash Partitioning**
+- Hash từ → `hash(word) % 5000`
+- Chia thành 5000 files nhỏ (mỗi file ~200KB)
+
+**Step 2: Count frequency trong mỗi file**
+- Load từng file vào memory
+- Dùng HashMap đếm frequency
+- Tìm Top 100 trong mỗi file
+
+**Step 3: Merge Top 100**
+- Dùng Min Heap (kích thước 100) để merge
+- Duyệt tất cả Top 100 từ các files
+- Giữ Top 100 global
+
+**Code**:
+```java
+public class Top100Words {
+    private static final int NUM_PARTITIONS = 5000;
+    private static final int TOP_K = 100;
+    
+    // Step 1: Partition file
+    public void partitionFile(String inputFile, String outputDir) throws IOException {
+        List<BufferedWriter> writers = new ArrayList<>();
+        for (int i = 0; i < NUM_PARTITIONS; i++) {
+            writers.add(new BufferedWriter(new FileWriter(
+                outputDir + "/partition_" + i + ".txt")));
+        }
+        
+        try (BufferedReader reader = new BufferedReader(new FileReader(inputFile))) {
+            String word;
+            while ((word = reader.readLine()) != null) {
+                int partition = Math.abs(word.hashCode()) % NUM_PARTITIONS;
+                writers.get(partition).write(word);
+                writers.get(partition).newLine();
+            }
+        }
+        
+        for (BufferedWriter writer : writers) {
+            writer.close();
+        }
+    }
+    
+    // Step 2: Find Top K in each partition
+    public List<Map.Entry<String, Integer>> findTopKInPartition(String filePath, int k) {
+        Map<String, Integer> frequency = new HashMap<>();
+        
+        // Count frequency
+        try (BufferedReader reader = new BufferedReader(new FileReader(filePath))) {
+            String word;
+            while ((word = reader.readLine()) != null) {
+                frequency.put(word, frequency.getOrDefault(word, 0) + 1);
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        
+        // Min Heap để giữ Top K
+        PriorityQueue<Map.Entry<String, Integer>> minHeap = new PriorityQueue<>(
+            (a, b) -> a.getValue() - b.getValue()
+        );
+        
+        for (Map.Entry<String, Integer> entry : frequency.entrySet()) {
+            if (minHeap.size() < k) {
+                minHeap.offer(entry);
+            } else if (entry.getValue() > minHeap.peek().getValue()) {
+                minHeap.poll();
+                minHeap.offer(entry);
+            }
+        }
+        
+        return new ArrayList<>(minHeap);
+    }
+    
+    // Step 3: Merge Top K from all partitions
+    public List<String> findTop100Words(String inputFile) throws IOException {
+        // Partition
+        partitionFile(inputFile, "temp/partitions");
+        
+        // Find Top K in each partition
+        List<Map.Entry<String, Integer>> allTopK = new ArrayList<>();
+        for (int i = 0; i < NUM_PARTITIONS; i++) {
+            List<Map.Entry<String, Integer>> topK = findTopKInPartition(
+                "temp/partitions/partition_" + i + ".txt", TOP_K);
+            allTopK.addAll(topK);
+        }
+        
+        // Merge: Find Top K global
+        PriorityQueue<Map.Entry<String, Integer>> minHeap = new PriorityQueue<>(
+            (a, b) -> a.getValue() - b.getValue()
+        );
+        
+        for (Map.Entry<String, Integer> entry : allTopK) {
+            if (minHeap.size() < TOP_K) {
+                minHeap.offer(entry);
+            } else if (entry.getValue() > minHeap.peek().getValue()) {
+                minHeap.poll();
+                minHeap.offer(entry);
+            }
+        }
+        
+        // Extract results
+        List<String> result = new ArrayList<>();
+        while (!minHeap.isEmpty()) {
+            result.add(minHeap.poll().getKey());
+        }
+        Collections.reverse(result);
+        
+        return result;
+    }
+}
+```
+
+**Key Insight**: 
+- **Hash partitioning** để chia file lớn thành files nhỏ
+- **Min Heap** để maintain Top K efficiently
+- **Two-phase**: Top K local → Top K global
+
+---
+
+### 10.1.2. ⭐ TopK Problem (Bài toán Top K)
 
 **Vấn đề**: Tìm K phần tử lớn nhất (hoặc nhỏ nhất) trong dataset cực lớn (không thể load hết vào memory).
 
@@ -398,6 +925,13 @@ Xem lại **Phần 3.5: Elasticsearch** trong `Phan3_Database_Storage.md`.
 Đã hoàn thành **Phần 10: Big Data Processing** với nội dung thực tế:
 
 ✅ **10.1. Big Data Algorithms**:
+- **Classic Problems** (Chi tiết với code):
+  - **Count Different Phone Numbers**: BitMap (12 MB cho 100M số)
+  - **Find Number if Exists**: BitMap (512 MB cho 2^32 số)
+  - **Find Common URLs**: Hash Partitioning (chia 320GB thành 1000 files)
+  - **Find Hottest Query String**: HashMap + Min Heap, Trie Tree
+  - **Find Top 1 IP**: Hash Partitioning + HashMap
+  - **Find Top 100 Words**: Hash Partitioning + Min Heap (2-phase)
 - **TopK Problem**: Min Heap, QuickSelect, Distributed
 - **Massive Data Problems**: Unique numbers (BitMap), Median, Top IP, Hot queries, Common URLs
 
@@ -413,7 +947,7 @@ Xem lại **Phần 3.5: Elasticsearch** trong `Phan3_Database_Storage.md`.
 
 ✅ **10.4. Search Engines**: Elasticsearch overview (chi tiết ở Part 3)
 
-**Tổng cộng: ~500 lines** kiến thức Big Data algorithms và systems!
+**Tổng cộng: ~1,200+ lines** kiến thức Big Data algorithms và systems, bao gồm 6 bài toán kinh điển với code examples chi tiết, solutions và best practices!
 
 ---
 

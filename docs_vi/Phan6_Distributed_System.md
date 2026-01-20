@@ -15,9 +15,83 @@
 *   **CP (Consistency + Partition Tolerance)**: Chấp nhận hy sinh Availability. Khi có Network Partition, hệ thống sẽ **từ chối request** để đảm bảo dữ liệu không bị sai lệch.
     *   *Ví dụ*: **ZooKeeper**, Etcd, HBase, Redis (Single/Sentinel/Cluster trong một số cấu hình strict).
     *   *Sử dụng*: Hệ thống tài chính, Distributed Lock.
+    *   *Trade-off*: Latency tăng (phải chờ quorum), Service unavailable khi mất quorum.
 *   **AP (Availability + Partition Tolerance)**: Chấp nhận hy sinh Consistency. Khi có Network Partition, hệ thống vẫn **trả về data cũ** (stale data) để giữ service up.
     *   *Ví dụ*: **Eureka**, Cassandra, DynamoDB, DNS.
     *   *Sử dụng*: Social network feed, E-commerce catalog.
+    *   *Trade-off*: Data có thể cũ, conflict resolution cần eventual consistency.
+
+**⭐ Production Scenarios:**
+
+**Scenario 1: ZooKeeper (CP) - Banking System**
+```
+Setup: 5-node ZooKeeper cluster cho distributed lock
+Event: Network partition → 2 nodes vs 3 nodes
+
+Behavior:
+- Partition A (2 nodes): Thiểu số → REJECT tất cả writes
+  → Client nhận error: "No quorum available"
+  → Service degraded: Read-only mode hoặc fail-fast
+  
+- Partition B (3 nodes): Đa số → CONTINUE accepting writes
+  → Đảm bảo consistency (không có split-brain)
+  → Latency tăng nhẹ (vì mất 2 nodes)
+
+Result: Availability giảm cho partition A, nhưng data LUÔN consistent
+Use case: Banking transfers, Inventory deduction
+```
+
+**Scenario 2: Cassandra (AP) - Social Network**
+```
+Setup: Cassandra cluster cho user timeline
+Event: Network partition → Data center US vs EU disconnected
+
+Behavior:
+- DC US: Continue serving reads/writes
+  → Users vẫn post/read timeline (có thể thấy data cũ)
+  
+- DC EU: Continue serving reads/writes
+  → Users cũng post/read timeline (có thể thấy data cũ)
+  
+- Conflict: User A post từ US, User B post từ EU về cùng topic
+  → Last-write-wins (dựa vào timestamp)
+  → Sau khi network recover, auto-merge conflicts
+
+Result: Service luôn available, nhưng có eventual consistency window
+Use case: Social feeds, Product catalog, Comment systems
+```
+
+**⭐ How to Choose?**
+
+| Yêu cầu | Chọn CP | Chọn AP |
+|---------|---------|---------|
+| **Data correctness critical** | ✅ Banking, Inventory | ❌ |
+| **Availability > Consistency** | ❌ | ✅ Social, Catalog |
+| **Can tolerate stale data?** | ❌ No | ✅ Yes (seconds-minutes) |
+| **Conflict resolution complex?** | Không cần (strong consistency) | ✅ Cần strategy |
+
+**⭐ Production Problem: Quorum Calculation Error**
+
+**Real Case:**
+```java
+// ❌ BAD: Tính quorum sai
+int totalNodes = 5;
+int quorum = totalNodes / 2;  // = 2 (SAI!)
+
+// Nếu có 2 partitions: 2 nodes vs 3 nodes
+// Partition A (2 nodes): 2 >= quorum (2) → Think có quorum → Accept writes
+// Partition B (3 nodes): 3 >= quorum (2) → Think có quorum → Accept writes
+// → Split-brain! 2 partitions cùng accept writes!
+
+// ✅ CORRECT: Phải dùng majority
+int quorum = totalNodes / 2 + 1;  // = 3 (ĐÚNG!)
+
+// Bây giờ:
+// Partition A (2 nodes): 2 < 3 → No quorum → Reject
+// Partition B (3 nodes): 3 >= 3 → Has quorum → Accept
+```
+
+**Lesson:** Luôn dùng **strict majority** (`n/2 + 1`), không phải `n/2`!
 
 ### 6.1.2. ⭐ BASE Theorem
 
@@ -77,6 +151,69 @@ SET lock_key unique_id NX PX 10000
 **Vấn đề Expiration**:
 *   Nếu task chạy quá 10s, lock tự nhả → Client khác lấy lock → **2 Clients cùng chạy** (Mất Mutual Exclusion)!
 
+**⭐ Production Problem 1: Clock Drift Race Condition**
+
+```java
+// ❌ Problem: Server clock drift
+// Timeline:
+// T=0: Client A acquires lock, expire = 10_000ms
+// T=5000: Server clock +3s drift → Lock expires tại T=7000 (thay vì T=10000)
+// T=7000: Lock tự expire (từ góc nhìn server)
+// T=7001: Client B acquires lock (Success!)
+// T=7500: Client A vẫn đang chạy task (nghĩ lock còn valid)
+// → 2 clients cùng chạy → Race condition!
+
+// ✅ Solution: Fencing Token Pattern
+public class FencedRedisLock {
+    private AtomicLong tokenGenerator = new AtomicLong(0);
+    
+    public Long acquireLock(String resource) {
+        String lockKey = "lock:" + resource;
+        long token = tokenGenerator.incrementAndGet();
+        
+        boolean success = redis.set(lockKey, String.valueOf(token), 
+            SetArgs.Builder.nx().px(10000));
+        
+        return success ? token : null;
+    }
+    
+    // Database/Service phải check token
+    public void updateInventory(Long productId, int quantity, Long token) {
+        // Check token trước khi update
+        Long currentToken = getCurrentToken(productId);
+        if (currentToken > token) {
+            throw new StaleTokenException("Lock token outdated");
+        }
+        
+        // Safe to update
+        inventoryDao.update(productId, quantity);
+        saveToken(productId, token);
+    }
+}
+```
+
+**⭐ Production Problem 2: Redlock Algorithm Controversy**
+
+**Martin Kleppmann's Criticism:**
+```
+Scenario: Redlock cluster với 5 Redis masters (A, B, C, D, E)
+
+Problem:
+1. Client 1 acquires lock trên 3 masters (A, B, C) → Success
+2. Master C bị GC pause → Lock expires
+3. Client 2 acquires lock trên 3 masters (C, D, E) → Success
+4. Bây giờ cả Client 1 và Client 2 đều nghĩ có lock!
+
+Martin's conclusion: Redlock không an toàn cho critical paths
+→ Nếu cần correctness → Dùng ZooKeeper (CP system)
+→ Nếu cần performance → Dùng single Redis + monitoring
+```
+
+**Recommendation:**
+- **CP required (Financial, Inventory)**: ZooKeeper/Etcd
+- **High performance (E-commerce features)**: Redisson + Single Redis
+- **Avoid Redlock**: Complexity cao, benefit thấp
+
 **Giải pháp: Redisson Framework (Watchdog)**
 *   Redisson tạo 1 luồng daemon (**Watchdog**) chạy ngầm.
 *   Mặc định lock 30s. Cứ mỗi 10s (1/3 time), Watchdog kiểm tra xem client còn sống & giữ lock không.
@@ -103,6 +240,74 @@ SET lock_key unique_id NX PX 10000
 **Nhược điểm:**
 *   Performance thấp hơn Redis (nhiều Write operations).
 *   Phức tạp để maintain ZK Cluster.
+
+**⭐ Production Optimization: Thundering Herd Prevention**
+
+```mermaid
+sequenceDiagram
+    participant L0 as Lock-0000
+    participant L1 as Lock-0001
+    participant L2 as Lock-0002
+    participant L3 as Lock-0003
+    
+    Note over L0,L3: ❌ Problem: All watch Lock-0000
+    L0->>L0: Release lock
+    L0-->>L1: Notify (wakeup)
+    L0-->>L2: Notify (waste!)
+    L0-->>L3: Notify (waste!)
+    
+    Note over L0,L3: ✅ Solution: Chain watching
+    Note over L1: L1 watches L0 only
+    Note over L2: L2 watches L1 only
+    Note over L3: L3 watches L2 only
+```
+
+```java
+// ✅ Curator Framework implementation (chain watching)
+public class ZKDistributedLock {
+    public void acquireLock(String lockPath) throws Exception {
+        // Create sequential node
+        String myNode = zk.create(
+            lockPath + "/lock-",
+            new byte[0],
+            ZooDefs.Ids.OPEN_ACL_UNSAFE,
+            CreateMode.EPHEMERAL_SEQUENTIAL
+        );
+        
+        while (true) {
+            List<String> children = zk.getChildren(lockPath, false);
+            Collections.sort(children);
+            
+            // Check if I'm the smallest
+            if (myNode.endsWith(children.get(0))) {
+                // Got lock!
+                return;
+            }
+            
+            // ✅ Watch ONLY the node before me (not the smallest)
+            String mySeq = myNode.substring(myNode.lastIndexOf('/') + 1);
+            int myIndex = children.indexOf(mySeq);
+            String watchNode = lockPath + "/" + children.get(myIndex - 1);
+            
+            CountDownLatch latch = new CountDownLatch(1);
+            Stat stat = zk.exists(watchNode, event -> {
+                if (event.getType() == Watcher.Event.EventType.NodeDeleted) {
+                    latch.countDown();
+                }
+            });
+            
+            if (stat != null) {
+                latch.await();  // Wait for previous node deletion
+            }
+            // Loop to re-check
+        }
+    }
+}
+```
+
+**Performance Impact:**
+- **Before**: All 1000 clients wakeup → Thundering herd
+- **After**: Only 1 client wakeups (next in line) → Efficient
 
 ### 6.2.5. So sánh Redis vs ZooKeeper Lock
 

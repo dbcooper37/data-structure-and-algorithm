@@ -522,7 +522,7 @@ Mỗi nút trong heap có giá trị **lớn hơn hoặc bằng** (hoặc **nh�
 *   Nhiều blog nói heap là cây nhị phân hoàn chỉnh, thực ra không phải vậy. **Heap không nhất thiết là cây nhị phân hoàn chỉnh**, chỉ là để tiện lưu trữ và truy cập, chúng ta thường dùng dạng cây nhị phân hoàn chỉnh để biểu diễn heap. Thực tế, Fibonacci Heap và Binomial Heap nổi tiếng không phải là cây nhị phân hoàn chỉnh, chúng thậm chí không phải là cây nhị phân.
 *   **(Binary) Heap là một mảng, có thể coi như một cây nhị phân gần hoàn chỉnh.** — *"Giải thuật Dẫn luận" ấn bản 3*
 
-![Heap 1](./pictures/堆/堆1.png)
+![Heap 1](images/堆1.png)
 
 Hình 1 và 2 là heap. Hình 1 là Max Heap, mỗi nút đều lớn hơn tất cả các nút trong cây con. Hình 2 là Min Heap, mỗi nút đều nhỏ hơn tất cả các nút trong cây con.
 
@@ -545,7 +545,7 @@ Heap chia thành **Max Heap** và **Min Heap**. Điểm khác biệt giữa hai 
 *   **Max Heap**: Mỗi nút trong heap có giá trị lớn hơn hoặc bằng giá trị của tất cả các nút trong cây con.
 *   **Min Heap**: Mỗi nút trong heap có giá trị nhỏ hơn hoặc bằng giá trị của tất cả các nút trong cây con.
 
-![Heap 2](./pictures/堆/堆2.png)
+![Heap 2](images/堆2.png)
 
 ### 6.4. Lưu trữ Heap
 
@@ -553,7 +553,7 @@ Như đã giới thiệu ở phần cây, do tính chất ưu việt của cây 
 
 Để tiện lưu trữ và truy cập, (binary) heap có thể được lưu trữ dưới dạng cây nhị phân hoàn chỉnh:
 
-![Lưu trữ Heap](./pictures/堆/堆的存储.png)
+![Lưu trữ Heap](images/堆的存储.png)
 
 ### 6.5. Các thao tác trên Heap
 
@@ -567,15 +567,15 @@ Các thao tác cập nhật heap chủ yếu bao gồm hai loại: **Chèn phầ
 
 **1. Đặt phần tử cần chèn vào cuối**
 
-![Heap - Chèn phần tử 1](./pictures/堆/堆-插入元素1.png)
+![Heap - Chèn phần tử 1](images/堆-插入元素1.png)
 
 > Người có năng lực sẽ dần được thăng chức tăng lương, vàng ắt sẽ tỏa sáng!!!
 
 **2. Từ dưới lên trên, nếu nút cha nhỏ hơn phần tử này, thì hoán đổi nút đó với nút cha, cho đến khi không thể hoán đổi**
 
-![Heap - Chèn phần tử 2](./pictures/堆/堆-插入元素2.png)
+![Heap - Chèn phần tử 2](images/堆-插入元素2.png)
 
-![Heap - Chèn phần tử 3](./pictures/堆/堆-插入元素3.png)
+![Heap - Chèn phần tử 3](images/堆-插入元素3.png)
 
 #### 6.5.2. Xóa phần tử đỉnh Heap
 
@@ -592,19 +592,19 @@ Sau khi xóa phần tử đỉnh heap, để duy trì tính chất heap, cần �
 
 Đầu tiên xóa phần tử đỉnh heap, khiến vị trí có chỉ số 1 trong mảng trống.
 
-![Xóa phần tử đỉnh heap 1](./pictures/堆/删除堆顶元素1.png)
+![Xóa phần tử đỉnh heap 1](images/删除堆顶元素1.png)
 
 > Vậy ai sẽ tiếp quản vị trí của sếp? Tất nhiên là cấp dưới trực tiếp của sếp rồi, ai có năng lực mạnh thì lên thôi.
 
 So sánh nút con trái và nút con phải của nút gốc, tức là phần tử mảng có chỉ số 2, 3, đưa phần tử lớn hơn vào vị trí nút gốc (chỉ số 1).
 
-![Xóa phần tử đỉnh heap 2](./pictures/堆/删除堆顶元素2.png)
+![Xóa phần tử đỉnh heap 2](images/删除堆顶元素2.png)
 
 > Lúc này lại trống một vị trí, quy tắc cũ, ai có năng lực thì lên.
 
 Tiếp tục lặp so sánh nút con trái phải của vị trí trống, đưa phần tử lớn hơn vào vị trí trống, cho đến khi đến đáy heap.
 
-![Xóa phần tử đỉnh heap 3](./pictures/堆/删除堆顶元素3.png)
+![Xóa phần tử đỉnh heap 3](images/删除堆顶元素3.png)
 
 Lúc này đã hoàn thành heap hóa từ dưới lên, không còn phần tử nào có thể lấp vào chỗ trống nữa. Tuy nhiên, chúng ta có thể thấy trong mảng xuất hiện "bong bóng", điều này sẽ gây lãng phí không gian lưu trữ. Tiếp theo chúng ta thử heap hóa từ trên xuống.
 
@@ -612,13 +612,13 @@ Lúc này đã hoàn thành heap hóa từ dưới lên, không còn phần tử
 
 Heap hóa từ trên xuống dùng một từ để mô tả là "đá chìm xuống biển". Vậy việc đầu tiên là nhấc hòn đá lên, ném từ mặt biển xuống. Hòn đá này chính là phần tử cuối cùng của heap, chúng ta di chuyển phần tử cuối lên đỉnh heap.
 
-![Xóa phần tử đỉnh heap 4](./pictures/堆/删除堆顶元素4.png)
+![Xóa phần tử đỉnh heap 4](images/删除堆顶元素4.png)
 
 Sau đó bắt đầu cho hòn đá này chìm xuống đáy biển, liên tục so sánh giá trị với nút con trái phải, hoán đổi vị trí với nút con lớn hơn, cho đến khi không thể hoán đổi vị trí.
 
-![Xóa phần tử đỉnh heap 5](./pictures/堆/删除堆顶元素5.png)
+![Xóa phần tử đỉnh heap 5](images/删除堆顶元素5.png)
 
-![Xóa phần tử đỉnh heap 6](./pictures/堆/删除堆顶元素6.png)
+![Xóa phần tử đỉnh heap 6](images/删除堆顶元素6.png)
 
 ### 6.6. Tổng kết Thao tác Heap
 
@@ -640,21 +640,21 @@ Nếu bạn đã hiểu đủ về quá trình heap hóa, thì quá trình xây 
 
 Quá trình cụ thể:
 
-![Xây dựng heap 1](./pictures/堆/建堆1.png)
+![Xây dựng heap 1](images/建堆1.png)
 
 Biến mảng không có thứ tự ban đầu thành một cây. Số nút trong hình là 6, nên các nút 4, 5, 6 là nút lá, các nút 1, 2, 3 là nút không phải lá, vì vậy cần heap hóa từ trên xuống (chìm xuống) cho các nút 1-3. Lưu ý, thứ tự là heap hóa từ sau ra trước, bắt đầu từ nút số 3, đến nút số 1.
 
 Kết quả heap hóa nút số 3:
 
-![Xây dựng heap 2](./pictures/堆/建堆2.png)
+![Xây dựng heap 2](images/建堆2.png)
 
 Kết quả heap hóa nút số 2:
 
-![Xây dựng heap 3](./pictures/堆/建堆3.png)
+![Xây dựng heap 3](images/建堆3.png)
 
 Kết quả heap hóa nút số 1:
 
-![Xây dựng heap 4](./pictures/堆/建堆4.png)
+![Xây dựng heap 4](images/建堆4.png)
 
 Đến đây, cây tương ứng với mảng đã trở thành một Max Heap, xây dựng heap hoàn thành!
 
@@ -674,27 +674,27 @@ Quá trình chi tiết:
 
 Lấy phần tử thứ nhất ra và heap hóa:
 
-![Heap Sort 1](./pictures/堆/堆排序1.png)
+![Heap Sort 1](images/堆排序1.png)
 
 Lấy phần tử thứ hai ra và heap hóa:
 
-![Heap Sort 2](./pictures/堆/堆排序2.png)
+![Heap Sort 2](images/堆排序2.png)
 
 Lấy phần tử thứ ba ra và heap hóa:
 
-![Heap Sort 3](./pictures/堆/堆排序3.png)
+![Heap Sort 3](images/堆排序3.png)
 
 Lấy phần tử thứ tư ra và heap hóa:
 
-![Heap Sort 4](./pictures/堆/堆排序4.png)
+![Heap Sort 4](images/堆排序4.png)
 
 Lấy phần tử thứ năm ra và heap hóa:
 
-![Heap Sort 5](./pictures/堆/堆排序5.png)
+![Heap Sort 5](images/堆排序5.png)
 
 Lấy phần tử thứ sáu ra và heap hóa:
 
-![Heap Sort 6](./pictures/堆/堆排序6.png)
+![Heap Sort 6](images/堆排序6.png)
 
 Sắp xếp heap hoàn thành!
 ---
@@ -749,34 +749,34 @@ public class Node {
 
 #### 7.5.1. Nhuộm màu nghiêng trái
 
-![Cây Đỏ-Đen 1](./pictures/红黑树/红黑树1.png)
+![Cây Đỏ-Đen 1](images/红黑树1.png)
 
 *   Khi nhuộm màu, dựa vào nút ông (grandparent) của nút hiện tại, tìm nút chú (uncle) của nút hiện tại.
 *   Sau đó nhuộm đen nút cha, nhuộm đen nút chú, nhuộm đỏ nút ông. Nhưng việc nhuộm đỏ nút ông là tạm thời, sau khi thao tác cân bằng cây hoàn thành sẽ nhuộm đen nút gốc.
 
 #### 7.5.2. Nhuộm màu nghiêng phải
 
-![Cây Đỏ-Đen 2](./pictures/红黑树/红黑树2.png)
+![Cây Đỏ-Đen 2](images/红黑树2.png)
 
 #### 7.5.3. Xoay trái điều chỉnh cân bằng
 
 ##### Một lần xoay trái
 
-![Cây Đỏ-Đen 3](./pictures/红黑树/红黑树3.png)
+![Cây Đỏ-Đen 3](images/红黑树3.png)
 
 ##### Xoay phải + Xoay trái
 
-![Cây Đỏ-Đen 4](./pictures/红黑树/红黑树4.png)
+![Cây Đỏ-Đen 4](images/红黑树4.png)
 
 #### 7.5.4. Xoay phải điều chỉnh cân bằng
 
 ##### Một lần xoay phải
 
-![Cây Đỏ-Đen 5](./pictures/红黑树/红黑树5.png)
+![Cây Đỏ-Đen 5](images/红黑树5.png)
 
 ##### Xoay trái + Xoay phải
 
-![Cây Đỏ-Đen 6](./pictures/红黑树/红黑树6.png)
+![Cây Đỏ-Đen 6](images/红黑树6.png)
 
 **Bài viết đề xuất:**
 *   [《红黑树深入剖析及 Java 实现》 - 美团点评技术团队](https://zhuanlan.zhihu.com/p/24367771)

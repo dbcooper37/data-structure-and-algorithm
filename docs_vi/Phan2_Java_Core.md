@@ -2842,6 +2842,1062 @@ list.forEach(System.out::println);
 
 ---
 
+## 2.7. Advanced Topics & Production Solutions
+
+### 2.7.1. Thread Pool Configuration Strategies
+
+#### Core Pool Size Calculation Formula
+
+**Vấn đề:** Làm sao xác định `corePoolSize` phù hợp?
+
+**Công thức cơ bản:**
+```
+corePoolSize = N_cpu * U_cpu * (1 + W/C)
+```
+
+Trong đó:
+- **N_cpu**: Số CPU cores (Runtime.getRuntime().availableProcessors())
+- **U_cpu**: CPU utilization target (0.5 - 0.8)
+- **W/C**: Ratio của wait time / compute time
+
+**Ví dụ thực tế:**
+
+```java
+// 8-core CPU, 70% utilization, IO-intensive (W/C = 2)
+int nCpu = Runtime.getRuntime().availableProcessors(); // 8
+double uCpu = 0.7;
+double wcRatio = 2.0;
+
+int corePoolSize = (int) (nCpu * uCpu * (1 + wcRatio)); 
+// = 8 * 0.7 * 3 = 16.8 ≈ 17
+
+ThreadPoolExecutor executor = new ThreadPoolExecutor(
+    17,  // corePoolSize
+    34,  // maximumPoolSize = 2 * corePoolSize
+    60L, TimeUnit.SECONDS,
+    new ArrayBlockingQueue<>(100),
+    Executors.defaultThreadFactory(),
+    new ThreadPoolExecutor.CallerRunsPolicy()
+);
+```
+
+**Decision Matrix:**
+
+| Task Type | W/C Ratio | Formula |
+| --- | --- | --- |
+| **CPU-intensive** | 0 | N_cpu + 1 |
+| **IO-intensive** | 2-4 | N_cpu * U * (1 + W/C) |
+| **Mixed** | 0.5-1 | N_cpu * U * (1 + W/C) |
+
+**Best Practices:**
+1. **Start conservative**: Bắt đầu với `N_cpu + 1`, monitor và adjust
+2. **Monitor metrics**: Queue size, active threads, CPU utilization
+3. **Use bounded queue**: Tránh OOM (`ArrayBlockingQueue` thay vì `LinkedBlockingQueue`)
+
+#### Queue Selection: Bounded vs Unbounded
+
+**Comparison:**
+
+| Queue Type | Bounded | Unbounded | Use Case |
+| --- | --- | --- | --- |
+| `ArrayBlockingQueue` | ✅ Yes | ❌ | **Production** - Safe, predictable |
+| `LinkedBlockingQueue` | ✅ Optional | ✅ Default | FixedThreadPool (unbounded) |
+| `SynchronousQueue` | ❌ (size=0) | ❌ | CachedThreadPool - Direct handoff |
+
+**Decision Tree:**
+
+```
+Do you know max concurrent tasks?
+├─ YES → Use ArrayBlockingQueue(maxSize)
+│         ├─ CPU-intensive → size = corePoolSize * 2
+│         └─ IO-intensive → size = corePoolSize * 10
+│
+└─ NO → Use LinkedBlockingQueue (unbounded)
+         ⚠️ Risk: OOM if tasks accumulate
+```
+
+**Code Example - Production Configuration:**
+```java
+// Production-ready thread pool
+int corePoolSize = Runtime.getRuntime().availableProcessors();
+int maxPoolSize = corePoolSize * 2;
+int queueSize = corePoolSize * 10; // Buffer for 10x core threads
+
+ThreadPoolExecutor executor = new ThreadPoolExecutor(
+    corePoolSize,
+    maxPoolSize,
+    60L, TimeUnit.SECONDS,
+    new ArrayBlockingQueue<>(queueSize), // Bounded!
+    new ThreadFactory() {
+        private int count = 0;
+        @Override
+        public Thread newThread(Runnable r) {
+            Thread t = new Thread(r, "Worker-" + (++count));
+            t.setDaemon(false);
+            return t;
+        }
+    },
+    new ThreadPoolExecutor.CallerRunsPolicy() // Back-pressure
+);
+```
+
+#### Rejection Policies - When Queue is Full
+
+**4 Built-in Policies:**
+
+| Policy | Behavior | Use Case |
+| --- | --- | --- |
+| **AbortPolicy** (default) | Throw `RejectedExecutionException` | Default, fails fast |
+| **CallerRunsPolicy** | Execute in caller thread | **Back-pressure** - slows producer |
+| **DiscardPolicy** | Silently discard | When loss is acceptable |
+| **DiscardOldestPolicy** | Discard oldest, add new | When newest tasks are more important |
+
+**Custom Policy Example:**
+```java
+class CustomRejectionPolicy implements RejectedExecutionHandler {
+    @Override
+    public void rejectedExecution(Runnable r, ThreadPoolExecutor executor) {
+        // Log rejection
+        System.err.println("Task rejected: " + r);
+        
+        // Retry after delay
+        try {
+            Thread.sleep(100);
+            executor.submit(r); // Retry
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            // Fallback: execute in current thread
+            r.run();
+        }
+    }
+}
+```
+
+**Best Practice:** Use `CallerRunsPolicy` cho production - tạo back-pressure tự nhiên khi system quá tải.
+
+### 2.7.2. Deadlock Detection và Prevention
+
+#### Lock Ordering Strategy
+
+**Vấn đề:** Multiple locks → circular wait → deadlock.
+
+**Solution: Global lock ordering** - luôn acquire locks theo cùng thứ tự.
+
+**Code Example:**
+```java
+class DeadlockFreeAccount {
+    private static final Object globalLockOrder = new Object();
+    private final int id; // Unique ID for ordering
+    private BigDecimal balance = BigDecimal.ZERO;
+    private final Object lock = new Object();
+
+    public DeadlockFreeAccount(int id) {
+        this.id = id;
+    }
+
+    // Transfer: Always lock smaller ID first
+    public static void transfer(DeadlockFreeAccount from, 
+                               DeadlockFreeAccount to, 
+                               BigDecimal amount) {
+        // Order locks by ID
+        DeadlockFreeAccount first = from.id < to.id ? from : to;
+        DeadlockFreeAccount second = from.id < to.id ? to : from;
+
+        synchronized (first.lock) {
+            synchronized (second.lock) {
+                if (from.balance.compareTo(amount) >= 0) {
+                    from.balance = from.balance.subtract(amount);
+                    to.balance = to.balance.add(amount);
+                }
+            }
+        }
+    }
+}
+```
+
+**Alternative: Using `System.identityHashCode()`**
+```java
+// If objects don't have natural ordering
+int firstHash = System.identityHashCode(obj1);
+int secondHash = System.identityHashCode(obj2);
+
+Object first = firstHash < secondHash ? obj1 : obj2;
+Object second = firstHash < secondHash ? obj2 : obj1;
+
+synchronized (first) {
+    synchronized (second) {
+        // Critical section
+    }
+}
+```
+
+#### Timeout-based Locks
+
+**Solution:** Dùng `ReentrantLock.tryLock(timeout)` thay vì `synchronized`.
+
+**Code Example:**
+```java
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.TimeUnit;
+
+class TimeoutLockExample {
+    private final ReentrantLock lock1 = new ReentrantLock();
+    private final ReentrantLock lock2 = new ReentrantLock();
+
+    public boolean tryTransfer(Account from, Account to, BigDecimal amount) {
+        boolean gotLock1 = false;
+        boolean gotLock2 = false;
+
+        try {
+            // Try acquire both locks with timeout
+            gotLock1 = lock1.tryLock(100, TimeUnit.MILLISECONDS);
+            if (!gotLock1) {
+                System.err.println("Failed to acquire lock1 within timeout");
+                return false;
+            }
+
+            gotLock2 = lock2.tryLock(100, TimeUnit.MILLISECONDS);
+            if (!gotLock2) {
+                System.err.println("Failed to acquire lock2 within timeout");
+                return false;
+            }
+
+            // Both locks acquired → execute transfer
+            if (from.balance.compareTo(amount) >= 0) {
+                from.balance = from.balance.subtract(amount);
+                to.balance = to.balance.add(amount);
+                return true;
+            }
+            return false;
+
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        } finally {
+            // Always release locks in reverse order
+            if (gotLock2) lock2.unlock();
+            if (gotLock1) lock1.unlock();
+        }
+    }
+}
+```
+
+**Advantages:**
+- ✅ No deadlock: Timeout → release locks
+- ✅ Better diagnostics: Know which lock timed out
+- ✅ Can retry or fail gracefully
+
+#### Deadlock Detection Tools
+
+**1. jstack (Command-line)**
+```bash
+# Get thread dump
+jstack <pid> > thread-dump.txt
+
+# Look for deadlock
+grep -i "deadlock\|BLOCKED" thread-dump.txt
+
+# Or analyze full dump
+cat thread-dump.txt | grep -A 20 "Found.*deadlock"
+```
+
+**Example jstack output khi có deadlock:**
+```
+Found one Java-level deadlock:
+=============================
+"Thread-1":
+  waiting to lock monitor 0x00007f8b1c001b58 (object 0x000000076ab62208, a java.lang.Object),
+  which is held by "Thread-2"
+"Thread-2":
+  waiting to lock monitor 0x00007f8b1c001af8 (object 0x000000076ab62200, a java.lang.Object),
+  which is held by "Thread-1"
+```
+
+**2. VisualVM (GUI Tool)**
+- Download: https://visualvm.github.io/
+- Connect to running JVM → Threads tab → Detect Deadlock
+- Shows visual graph of waiting threads
+
+**3. Automatic Deadlock Detection (Programmatic)**
+```java
+import java.lang.management.ManagementFactory;
+import java.lang.management.ThreadMXBean;
+
+class DeadlockDetector {
+    private final ThreadMXBean threadMX = ManagementFactory.getThreadMXBean();
+
+    public void detectDeadlock() {
+        long[] deadlockedThreads = threadMX.findDeadlockedThreads();
+        if (deadlockedThreads != null) {
+            System.err.println("Deadlock detected!");
+            ThreadInfo[] threadInfos = threadMX.getThreadInfo(deadlockedThreads);
+            for (ThreadInfo info : threadInfos) {
+                System.err.println(info);
+            }
+        }
+    }
+
+    // Run periodically
+    public void startMonitoring() {
+        ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
+        scheduler.scheduleAtFixedRate(this::detectDeadlock, 0, 5, TimeUnit.SECONDS);
+    }
+}
+```
+
+### 2.7.3. Producer-Consumer Patterns
+
+#### BlockingQueue Implementation
+
+**Classic Pattern:**
+```java
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ArrayBlockingQueue;
+
+class ProducerConsumer {
+    private final BlockingQueue<Integer> queue = new ArrayBlockingQueue<>(10);
+
+    class Producer implements Runnable {
+        private int value = 0;
+
+        @Override
+        public void run() {
+            try {
+                while (true) {
+                    queue.put(++value); // Blocks if queue full
+                    System.out.println("Produced: " + value);
+                    Thread.sleep(100);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    class Consumer implements Runnable {
+        @Override
+        public void run() {
+            try {
+                while (true) {
+                    Integer value = queue.take(); // Blocks if queue empty
+                    System.out.println("Consumed: " + value);
+                    process(value);
+                    Thread.sleep(200);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        private void process(Integer value) {
+            // Process value
+        }
+    }
+
+    public void start() {
+        new Thread(new Producer()).start();
+        new Thread(new Consumer()).start();
+        new Thread(new Consumer()).start(); // Multiple consumers
+    }
+}
+```
+
+#### Wait/Notify Pattern (Manual Implementation)
+
+**Code Example:**
+```java
+class ManualProducerConsumer {
+    private final Object lock = new Object();
+    private final Queue<Integer> queue = new LinkedList<>();
+    private static final int MAX_SIZE = 10;
+
+    class Producer implements Runnable {
+        private int value = 0;
+
+        @Override
+        public void run() {
+            while (true) {
+                synchronized (lock) {
+                    // Wait if queue full
+                    while (queue.size() >= MAX_SIZE) {
+                        try {
+                            lock.wait(); // Release lock, wait for notify
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            return;
+                        }
+                    }
+
+                    queue.offer(++value);
+                    System.out.println("Produced: " + value);
+                    lock.notifyAll(); // Notify waiting consumers
+                }
+
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }
+    }
+
+    class Consumer implements Runnable {
+        @Override
+        public void run() {
+            while (true) {
+                synchronized (lock) {
+                    // Wait if queue empty
+                    while (queue.isEmpty()) {
+                        try {
+                            lock.wait(); // Release lock, wait for notify
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            return;
+                        }
+                    }
+
+                    Integer value = queue.poll();
+                    System.out.println("Consumed: " + value);
+                    lock.notifyAll(); // Notify waiting producers
+                }
+
+                try {
+                    Thread.sleep(200);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }
+    }
+}
+```
+
+**Key Points:**
+- ✅ `wait()` releases lock → other threads can enter
+- ✅ Always use `while` loop (not `if`) → check condition again after notify
+- ✅ Use `notifyAll()` instead of `notify()` → wake all waiting threads
+
+#### Condition Variables (More Flexible)
+
+**Code Example:**
+```java
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.ReentrantLock;
+
+class ConditionProducerConsumer {
+    private final ReentrantLock lock = new ReentrantLock();
+    private final Condition notFull = lock.newCondition();  // Queue not full
+    private final Condition notEmpty = lock.newCondition(); // Queue not empty
+    private final Queue<Integer> queue = new LinkedList<>();
+    private static final int MAX_SIZE = 10;
+
+    public void produce(int value) throws InterruptedException {
+        lock.lock();
+        try {
+            while (queue.size() >= MAX_SIZE) {
+                notFull.await(); // Wait for queue not full
+            }
+            queue.offer(value);
+            notEmpty.signal(); // Signal queue not empty
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public Integer consume() throws InterruptedException {
+        lock.lock();
+        try {
+            while (queue.isEmpty()) {
+                notEmpty.await(); // Wait for queue not empty
+            }
+            Integer value = queue.poll();
+            notFull.signal(); // Signal queue not full
+            return value;
+        } finally {
+            lock.unlock();
+        }
+    }
+}
+```
+
+**Advantages over wait/notify:**
+- ✅ Multiple conditions per lock → more readable
+- ✅ Can use timeout: `condition.await(timeout, unit)`
+- ✅ More flexible signal: `signal()` vs `signalAll()`
+
+### 2.7.4. JVM Tuning Solutions - GC Selection Matrix
+
+#### When to Use Which GC?
+
+**Decision Matrix:**
+
+| GC Type | Throughput | Latency | Use Case | JDK Version |
+| --- | --- | --- | --- | --- |
+| **Serial GC** | ❌ Low | ❌ High | Small apps, single-core, client apps | All |
+| **Parallel GC** | ✅ High | ❌ High | Batch processing, throughput priority | All |
+| **CMS** | ⚠️ Medium | ✅ Low | Deprecated, was for low-latency | ≤JDK 14 |
+| **G1 GC** | ✅ Medium-High | ✅ Medium | **Default**, balanced workload | JDK 9+ |
+| **ZGC** | ✅ High | ✅✅ Ultra-low | <10ms pause, large heap (>8GB) | JDK 15+ |
+| **Shenandoah** | ✅ High | ✅✅ Ultra-low | Similar to ZGC, Red Hat | JDK 12+ |
+
+**Configuration Examples:**
+
+**1. Parallel GC (Throughput Priority):**
+```bash
+java -Xms4g -Xmx4g \
+     -XX:+UseParallelGC \
+     -XX:ParallelGCThreads=4 \
+     -XX:+UseParallelOldGC \
+     -XX:MaxGCPauseMillis=500 \
+     -jar app.jar
+```
+**Use when:** Batch jobs, data processing, throughput > latency.
+
+**2. G1 GC (Balanced - Recommended):**
+```bash
+java -Xms8g -Xmx8g \
+     -XX:+UseG1GC \
+     -XX:MaxGCPauseMillis=200 \
+     -XX:G1HeapRegionSize=16m \
+     -XX:InitiatingHeapOccupancyPercent=45 \
+     -XX:ConcGCThreads=4 \
+     -jar app.jar
+```
+**Use when:** Most production apps, balanced workload.
+
+**3. ZGC (Ultra-low Latency):**
+```bash
+java -Xms16g -Xmx16g \
+     -XX:+UseZGC \
+     -XX:+UnlockExperimentalVMOptions \
+     -XX:+UseLargePages \
+     -jar app.jar
+```
+**Use when:** Real-time systems, trading platforms, latency <10ms critical.
+
+#### GC Tuning Parameters
+
+**G1 GC Key Parameters:**
+
+| Parameter | Description | Recommended Value |
+| --- | --- | --- |
+| `-XX:MaxGCPauseMillis` | Target pause time | 200ms (default), adjust based on SLA |
+| `-XX:G1HeapRegionSize` | Region size | 1-32MB, must be power of 2 |
+| `-XX:InitiatingHeapOccupancyPercent` | Start concurrent GC when heap this full | 45 (default) |
+| `-XX:ConcGCThreads` | Concurrent GC threads | ~25% of parallel GC threads |
+
+**Parallel GC Parameters:**
+```bash
+-XX:ParallelGCThreads=8        # Number of GC threads
+-XX:MaxGCPauseMillis=500       # Target pause (best effort)
+-XX:GCTimeRatio=99             # GC time / application time ratio
+```
+
+**GCTimeRatio Formula:**
+```
+GCTimeRatio = 99 means: GC time / application time = 1/99
+→ GC should use ~1% of total time
+```
+
+#### Young vs Old Generation Ratio
+
+**Default Ratio (G1 GC):**
+- Young Gen: 25-50% of heap (auto-adjusted)
+- Old Gen: 50-75% of heap
+
+**Manual Configuration:**
+```bash
+# Fixed ratio (Parallel GC)
+-XX:NewRatio=2  # Old:Young = 2:1 → Young = 1/3 of heap
+
+# Fixed Young Gen size
+-Xmn2g  # Young Gen = 2GB (fixed)
+
+# G1 GC: Region-based, no fixed ratio
+# Auto-adjusts based on -XX:MaxGCPauseMillis
+```
+
+**Tuning Strategy:**
+1. **Too many Full GCs?** → Increase Young Gen size
+2. **Minor GC too slow?** → Decrease Young Gen size
+3. **Objects promoting too fast?** → Increase Young Gen size
+
+**Monitoring:**
+```bash
+jstat -gc <pid> 1000  # Print every 1s
+# Look at: YGCT (Young GC time), FGCT (Full GC time), FGC count
+```
+
+#### String Deduplication
+
+**Problem:** Duplicate strings waste memory (especially after deserialization).
+
+**Solution:**
+```bash
+# G1 GC only
+-XX:+UseG1GC
+-XX:+UseStringDeduplication  # Enable string dedup
+-XX:StringDeduplicationAgeThreshold=3  # After 3 GCs, dedup string
+```
+
+**How it works:**
+1. During G1 GC pause, scan strings in Old Gen
+2. Compare char arrays → find duplicates
+3. Point duplicate strings to same char array
+
+**Memory savings:** 10-30% in applications with many duplicate strings.
+
+### 2.7.5. Memory Leak Solutions
+
+#### Common Leak Scenarios
+
+**1. Static Collections Holding Objects**
+```java
+// ❌ Memory Leak!
+class LeakyCache {
+    private static final Map<String, Object> cache = new HashMap<>();
+    
+    public void addToCache(String key, Object value) {
+        cache.put(key, value); // Never removed → OOM!
+    }
+}
+
+// ✅ Fix: Use WeakHashMap or bounded cache
+class FixedCache {
+    private static final Map<String, WeakReference<Object>> cache = new HashMap<>();
+    private static final int MAX_SIZE = 1000;
+    
+    public void addToCache(String key, Object value) {
+        if (cache.size() >= MAX_SIZE) {
+            // Evict oldest or least used
+            evictOldest();
+        }
+        cache.put(key, new WeakReference<>(value));
+    }
+    
+    private void evictOldest() {
+        // LRU eviction logic
+    }
+}
+```
+
+**2. Listeners Not Removed**
+```java
+// ❌ Memory Leak!
+class Button {
+    private List<ActionListener> listeners = new ArrayList<>();
+    
+    public void addListener(ActionListener listener) {
+        listeners.add(listener); // Never removed!
+    }
+}
+
+// ✅ Fix: Provide remove method
+class FixedButton {
+    private List<ActionListener> listeners = new ArrayList<>();
+    
+    public void addListener(ActionListener listener) {
+        listeners.add(listener);
+    }
+    
+    public void removeListener(ActionListener listener) {
+        listeners.remove(listener); // Must remove!
+    }
+}
+```
+
+**3. ThreadLocal Leaks**
+```java
+// ❌ Memory Leak!
+class UserContext {
+    private static final ThreadLocal<User> context = new ThreadLocal<>();
+    
+    public static void set(User user) {
+        context.set(user);
+        // ❌ Never removed in thread pool → thread reused → OOM!
+    }
+}
+
+// ✅ Fix: Always remove after use
+class FixedUserContext {
+    private static final ThreadLocal<User> context = new ThreadLocal<>();
+    
+    public static void set(User user) {
+        context.set(user);
+    }
+    
+    public static void remove() {
+        context.remove(); // Must remove!
+    }
+    
+    // Best: Use try-finally
+    public static void withContext(User user, Runnable task) {
+        try {
+            set(user);
+            task.run();
+        } finally {
+            remove(); // Always cleanup
+        }
+    }
+}
+```
+
+**4. Unclosed Resources**
+```java
+// ❌ Memory Leak!
+public void readFile(String path) throws IOException {
+    FileInputStream fis = new FileInputStream(path);
+    BufferedReader reader = new BufferedReader(new InputStreamReader(fis));
+    // ❌ Never closed → file handle leak!
+    String line = reader.readLine();
+}
+
+// ✅ Fix: Try-with-resources
+public void readFile(String path) throws IOException {
+    try (FileInputStream fis = new FileInputStream(path);
+         BufferedReader reader = new BufferedReader(new InputStreamReader(fis))) {
+        String line = reader.readLine();
+        // Auto-close after try block
+    }
+}
+```
+
+#### Detection Tools
+
+**1. HeapDump Analysis với MAT (Memory Analyzer Tool)**
+
+**Generate heap dump:**
+```bash
+# Option 1: JVM parameter
+-XX:+HeapDumpOnOutOfMemoryError
+-XX:HeapDumpPath=/path/to/heapdump.hprof
+
+# Option 2: jmap command
+jmap -dump:live,format=b,file=heapdump.hprof <pid>
+
+# Option 3: jcmd (JDK 7+)
+jcmd <pid> GC.run_finalization
+jcmd <pid> VM.run_finalization
+jcmd <pid> VM.dump_heap heapdump.hprof
+```
+
+**Analyze with MAT:**
+1. Open heapdump.hprof in MAT
+2. Look for "Leak Suspects" report
+3. Check "Histogram" → sort by "Shallow Heap" or "Retained Heap"
+4. Find suspicious classes → "Path to GC Roots"
+
+**Common patterns:**
+- `java.lang.Thread` holding references → ThreadLocal leaks
+- Collections with many entries → static collections leak
+- Finalizers queue → objects waiting for finalization
+
+**2. VisualVM Profiling**
+
+**Steps:**
+1. Connect VisualVM to JVM
+2. Monitor tab → Heap → Watch heap growth
+3. Profiler tab → Memory → Record allocations
+4. Check "Allocated Objects" → find growing classes
+
+**3. JProfiler Workflow**
+
+**Memory Profiler:**
+1. Start recording allocations
+2. Trigger suspected leak scenario
+3. Take heap snapshot
+4. Compare snapshots → find growing objects
+5. View "Allocations" → see where objects created
+
+**Example workflow:**
+```java
+// Trigger leak
+for (int i = 0; i < 10000; i++) {
+    leakyMethod();
+}
+
+// Take snapshot 1
+// ... wait ...
+// Trigger again
+for (int i = 0; i < 10000; i++) {
+    leakyMethod();
+}
+
+// Take snapshot 2
+// Compare: Snapshot 2 - Snapshot 1 → find new objects
+```
+
+#### Prevention Strategies
+
+**1. Weak/Soft References**
+
+**WeakHashMap Example:**
+```java
+// Auto-evict when key is GC'd
+Map<String, Metadata> cache = new WeakHashMap<>();
+cache.put("key", metadata); // If "key" string is GC'd → entry removed
+```
+
+**SoftReference Example:**
+```java
+// GC'd only when memory pressure
+SoftReference<LargeObject> ref = new SoftReference<>(largeObject);
+LargeObject obj = ref.get(); // May return null if GC'd
+```
+
+**Use cases:**
+- Cache entries → WeakHashMap
+- Large objects → SoftReference
+- Listeners → WeakReference (auto-cleanup)
+
+**2. Try-with-resources Pattern**
+```java
+// Auto-close implements AutoCloseable
+try (Connection conn = dataSource.getConnection();
+     PreparedStatement stmt = conn.prepareStatement(sql);
+     ResultSet rs = stmt.executeQuery()) {
+    // Use resources
+} // Auto-close all, even if exception
+```
+
+**3. Proper Cleanup in Finally**
+```java
+Connection conn = null;
+try {
+    conn = dataSource.getConnection();
+    // Use connection
+} catch (SQLException e) {
+    // Handle
+} finally {
+    if (conn != null) {
+        try {
+            conn.close(); // Always close
+        } catch (SQLException e) {
+            // Log but don't throw
+        }
+    }
+}
+```
+
+**4. Memory Leak Detection Pattern (Testing)**
+```java
+@Test
+public void testMemoryLeak() throws Exception {
+    // Force GC
+    System.gc();
+    Thread.sleep(100);
+    
+    long heapBefore = Runtime.getRuntime().totalMemory() - 
+                      Runtime.getRuntime().freeMemory();
+    
+    // Execute suspected leaky code
+    for (int i = 0; i < 1000; i++) {
+        suspectedLeakyMethod();
+    }
+    
+    // Force GC again
+    System.gc();
+    Thread.sleep(100);
+    
+    long heapAfter = Runtime.getRuntime().totalMemory() - 
+                     Runtime.getRuntime().freeMemory();
+    
+    long growth = heapAfter - heapBefore;
+    assertTrue("Memory leak detected: " + growth, growth < 10_000_000); // < 10MB
+}
+```
+
+### 2.7.6. Collections Advanced
+
+#### ConcurrentHashMap Internals
+
+**Architecture Evolution:**
+
+**JDK 7: Segment-based Locking (Lock Striping)**
+```
+ConcurrentHashMap
+├─ Segment 0 (Lock)
+│  └─ HashEntry[] (buckets)
+├─ Segment 1 (Lock)
+│  └─ HashEntry[] (buckets)
+└─ ...
+```
+- 16 segments by default
+- Each segment has own lock → 16-way parallelism
+- Lock contention reduced by 16x vs synchronized HashMap
+
+**JDK 8+: Node-based + CAS + Synchronized**
+```java
+// Simplified structure
+class ConcurrentHashMap<K,V> {
+    transient volatile Node<K,V>[] table; // Array of buckets
+    
+    static class Node<K,V> implements Map.Entry<K,V> {
+        final int hash;
+        final K key;
+        volatile V val;
+        volatile Node<K,V> next;
+    }
+}
+```
+
+**Lock Strategy:**
+1. **Put operation:** 
+   - Hash → find bucket
+   - If bucket empty → CAS to add first node
+   - If bucket has nodes → `synchronized` on first node
+
+2. **Get operation:**
+   - Fully lock-free (volatile read)
+   - Read through volatile references
+
+**Code Example:**
+```java
+import java.util.concurrent.ConcurrentHashMap;
+
+ConcurrentHashMap<String, Integer> map = new ConcurrentHashMap<>();
+
+// Thread-safe operations
+map.put("key1", 1);  // Lock-free for empty bucket, synchronized for collisions
+Integer value = map.get("key1"); // Fully lock-free
+
+// Atomic operations
+map.compute("key1", (k, v) -> v == null ? 1 : v + 1); // Atomic update
+map.merge("key1", 1, Integer::sum); // Atomic merge
+```
+
+**When to use vs synchronized Map:**
+
+| Aspect | ConcurrentHashMap | Collections.synchronizedMap() |
+| --- | --- | --- |
+| **Performance** | ✅ High (lock striping/CAS) | ❌ Low (single lock) |
+| **Concurrency** | ✅ 16+ concurrent writes | ❌ Serialized writes |
+| **Null values** | ❌ Not allowed | ✅ Allowed |
+| **Lock-free reads** | ✅ Yes | ❌ No |
+| **Use case** | **High concurrency** | Low concurrency |
+
+**Performance Comparison:**
+```java
+// ConcurrentHashMap: ~10M ops/sec (8 threads)
+ConcurrentHashMap<String, Integer> chm = new ConcurrentHashMap<>();
+// 8 threads write concurrently → ~10M ops/sec
+
+// Synchronized HashMap: ~1M ops/sec (8 threads)
+Map<String, Integer> syncMap = Collections.synchronizedMap(new HashMap<>());
+// 8 threads → serialized → ~1M ops/sec (10x slower!)
+```
+
+#### CopyOnWriteArrayList Use Cases
+
+**How it works:**
+```java
+// Simplified
+class CopyOnWriteArrayList<E> {
+    private transient volatile Object[] array;
+    
+    public boolean add(E e) {
+        synchronized (lock) {
+            Object[] es = array;
+            int len = es.length;
+            es = Arrays.copyOf(es, len + 1); // Copy array!
+            es[len] = e;
+            array = es; // Atomic volatile write
+            return true;
+        }
+    }
+    
+    public E get(int index) {
+        return elementAt(array); // Lock-free read
+    }
+}
+```
+
+**Key Characteristics:**
+- ✅ **Read-heavy**: Lock-free reads (O(1))
+- ❌ **Write-heavy**: Expensive (O(n) copy on every write)
+- ✅ **Snapshot iterator**: Iteration sees snapshot at iterator creation
+
+**Use Cases:**
+
+**1. Read-heavy Scenarios**
+```java
+// Configuration cache (read 1000x, write 1x per hour)
+CopyOnWriteArrayList<String> configCache = new CopyOnWriteArrayList<>();
+
+// Thread-safe reads (no lock)
+String value = configCache.get(0); // Lock-free!
+
+// Expensive writes (but rare)
+configCache.add("new-config"); // Copy array (acceptable if rare)
+```
+
+**2. Event Listener Lists**
+```java
+class EventSource {
+    private final CopyOnWriteArrayList<EventListener> listeners = 
+        new CopyOnWriteArrayList<>();
+    
+    // Add listener (rare operation)
+    public void addListener(EventListener listener) {
+        listeners.add(listener); // Safe, expensive but rare
+    }
+    
+    // Fire event (frequent operation)
+    public void fireEvent(Event event) {
+        // Snapshot at iteration start → safe even if listener removed
+        for (EventListener listener : listeners) {
+            listener.onEvent(event); // Lock-free iteration
+        }
+    }
+}
+```
+
+**Performance Trade-offs:**
+
+| Operation | ArrayList | SynchronizedList | CopyOnWriteArrayList |
+| --- | --- | --- | --- |
+| **Read** | O(1) | O(1) with lock | O(1) **lock-free** ✅ |
+| **Write** | O(1) amortized | O(1) with lock | O(n) **copy** ❌ |
+| **Iterator** | Fail-fast | Fail-fast | Snapshot (safe) ✅ |
+| **Use case** | Single-threaded | Low concurrency | **Read-heavy** ✅ |
+
+**When to use:**
+- ✅ Read >> Write (10:1 or more)
+- ✅ Iterators must be safe (no ConcurrentModificationException)
+- ✅ List size small to medium (< 1000 elements)
+- ❌ **Don't use** for write-heavy scenarios
+
+**Example: Configuration Registry**
+```java
+class ConfigRegistry {
+    private final CopyOnWriteArrayList<Config> configs = 
+        new CopyOnWriteArrayList<>();
+    
+    // Read-heavy: Many threads read configs
+    public Config getConfig(String key) {
+        return configs.stream()
+            .filter(c -> c.getKey().equals(key))
+            .findFirst()
+            .orElse(null);
+    }
+    
+    // Write-rare: Admin updates configs once per hour
+    public void updateConfig(Config config) {
+        int index = findIndex(config.getKey());
+        if (index >= 0) {
+            configs.set(index, config); // Copy array, but rare
+        } else {
+            configs.add(config);
+        }
+    }
+}
+```
+
+---
+
 ## Tổng kết Part 2: Java Core
 
 Đã hoàn thành **Part 2: Java Core** với các nội dung chi tiết:

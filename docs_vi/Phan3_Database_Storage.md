@@ -1756,6 +1756,1084 @@ GET /logs/_search
 
 ---
 
+## 3.6. Advanced Database & Production Solutions
+
+### 3.6.1. Query Optimization Chi tiết
+
+#### Explain Plan Analysis (MySQL)
+
+**EXPLAIN Output Columns:**
+
+| Column | Meaning | Optimization Target |
+| --- | --- | --- |
+| **type** | Join type (ALL, index, range, ref, eq_ref, const) | Avoid ALL (full table scan) |
+| **key** | Index used | Ensure index is used |
+| **rows** | Rows examined | Minimize rows scanned |
+| **Extra** | Additional info | `Using index` (good), `Using filesort` (bad) |
+
+**Common Explain Output Examples:**
+
+```sql
+-- Good: Using index (covering index)
+EXPLAIN SELECT user_id, status FROM orders WHERE user_id = 123;
+-- type: ref, key: idx_user_status, Extra: Using index
+
+-- Bad: Full table scan
+EXPLAIN SELECT * FROM orders WHERE status = 'PENDING';
+-- type: ALL, key: NULL, rows: 1000000 (bad!)
+
+-- Fix: Add index
+CREATE INDEX idx_status ON orders(status);
+-- Now: type: ref, key: idx_status
+```
+
+**EXPLAIN ANALYZE (MySQL 8.0+):**
+```sql
+EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id = 123;
+-- Shows actual execution time and rows scanned
+```
+
+#### Index Selection Strategies
+
+**1. Covering Index Pattern**
+
+**Concept:** Index chứa tất cả columns cần query → Không cần đọc table (index-only scan).
+
+**Example:**
+```sql
+-- Table structure
+CREATE TABLE orders (
+    id BIGINT PRIMARY KEY,
+    user_id BIGINT,
+    status VARCHAR(20),
+    amount DECIMAL(10,2),
+    created_at TIMESTAMP,
+    INDEX idx_user_status (user_id, status)  -- Covering index
+);
+
+-- Query: Only needs user_id and status
+SELECT user_id, status FROM orders WHERE user_id = 123;
+-- ✅ Uses idx_user_status → No table lookup needed → Very fast!
+
+-- Query: Needs amount (not in index)
+SELECT user_id, status, amount FROM orders WHERE user_id = 123;
+-- ❌ Uses idx_user_status → But needs table lookup for amount → Slower
+```
+
+**Optimization:**
+```sql
+-- Add amount to covering index
+CREATE INDEX idx_user_status_amount ON orders(user_id, status, amount);
+-- Now query can use covering index → No table lookup
+```
+
+**2. Composite Index Ordering Rules**
+
+**Rule 1: Leftmost Prefix Rule**
+```sql
+-- Composite index: (user_id, status, created_at)
+CREATE INDEX idx_composite ON orders(user_id, status, created_at);
+
+-- ✅ Can use index:
+SELECT * FROM orders WHERE user_id = 123;
+SELECT * FROM orders WHERE user_id = 123 AND status = 'PENDING';
+SELECT * FROM orders WHERE user_id = 123 AND status = 'PENDING' AND created_at > '2024-01-01';
+
+-- ❌ Cannot use index:
+SELECT * FROM orders WHERE status = 'PENDING';  -- Missing user_id (leftmost)
+SELECT * FROM orders WHERE created_at > '2024-01-01';  -- Missing leftmost columns
+```
+
+**Rule 2: Equality First, Range Last**
+```sql
+-- ✅ Good order: Equality columns first, range columns last
+CREATE INDEX idx_good ON orders(user_id, status, created_at);
+-- WHERE user_id = 123 AND status = 'PENDING' AND created_at > '2024-01-01'
+
+-- ❌ Bad order: Range column in middle
+CREATE INDEX idx_bad ON orders(user_id, created_at, status);
+-- WHERE user_id = 123 AND created_at > '2024-01-01' AND status = 'PENDING'
+-- → Cannot use index for status (range stops index usage)
+```
+
+**Rule 3: High Selectivity First**
+```sql
+-- Selectivity: user_id (high, unique) > status (medium) > created_at (low)
+-- ✅ Good: High selectivity first
+CREATE INDEX idx_selectivity ON orders(user_id, status, created_at);
+
+-- Why? High selectivity columns filter more rows → Smaller result set early
+```
+
+**3. Index Selectivity Calculation**
+
+**Formula:**
+```
+Selectivity = COUNT(DISTINCT column) / COUNT(*)
+Higher selectivity = More selective = Better for index
+```
+
+**Example:**
+```sql
+-- Table: 1,000,000 rows
+
+-- Column: user_id (unique)
+SELECT COUNT(DISTINCT user_id) / COUNT(*) FROM orders;
+-- = 1,000,000 / 1,000,000 = 1.0 (100% selective) ✅ Excellent
+
+-- Column: status
+SELECT COUNT(DISTINCT status) / COUNT(*) FROM orders;
+-- = 5 / 1,000,000 = 0.000005 (0.0005% selective) ❌ Low selectivity
+
+-- Conclusion: user_id index is much better than status index
+```
+
+**Best Practice:**
+- ✅ Index columns with selectivity > 0.1 (10%)
+- ❌ Avoid indexes on low selectivity columns (gender, status) unless combined with high selectivity column
+
+#### Join Optimization
+
+**1. Join Types Comparison**
+
+| Join Type | Algorithm | Time Complexity | Best Use Case |
+| --- | --- | --- | --- |
+| **Nested Loop Join** | For each row in outer, scan inner | O(n × m) | Small tables, indexed join columns |
+| **Hash Join** | Build hash table on inner, probe outer | O(n + m) | No indexes, large tables |
+| **Merge Join** | Sort both tables, merge | O(n log n + m log m) | Sorted tables, large tables |
+
+**MySQL Join Algorithm:**
+
+```sql
+-- MySQL uses Nested Loop Join by default
+-- Optimization: Ensure join columns are indexed
+
+-- ✅ Good: Indexed join
+CREATE INDEX idx_user_id ON orders(user_id);
+CREATE INDEX idx_id ON users(id);
+
+SELECT o.*, u.name 
+FROM orders o 
+JOIN users u ON o.user_id = u.id;
+-- → Fast nested loop join (indexed lookup)
+
+-- ❌ Bad: No index
+SELECT o.*, u.name 
+FROM orders o 
+JOIN users u ON o.user_id = u.id;
+-- → Slow nested loop join (full table scan for each order)
+```
+
+**2. Join Order Optimization**
+
+**Problem:** Join order affects performance (small table first → fewer iterations).
+
+**Example:**
+```sql
+-- Table sizes: users (1000 rows), orders (1,000,000 rows)
+
+-- ❌ Bad order: Large table first
+SELECT * FROM orders o 
+JOIN users u ON o.user_id = u.id 
+WHERE u.status = 'ACTIVE';
+-- → 1,000,000 iterations (scan orders, lookup users)
+
+-- ✅ Good order: Filter small table first
+SELECT * FROM users u 
+JOIN orders o ON u.id = o.user_id 
+WHERE u.status = 'ACTIVE';
+-- → ~100 iterations (filter users first: 100 ACTIVE users, then join)
+```
+
+**MySQL Query Optimizer:** Usually chooses best join order automatically, but can be forced:
+
+```sql
+-- Force join order with STRAIGHT_JOIN
+SELECT * FROM users u 
+STRAIGHT_JOIN orders o ON u.id = o.user_id 
+WHERE u.status = 'ACTIVE';
+```
+
+**3. Subquery vs Join Performance**
+
+**Example 1: EXISTS vs JOIN**
+```sql
+-- EXISTS (usually faster for large tables)
+SELECT * FROM orders o 
+WHERE EXISTS (
+    SELECT 1 FROM users u 
+    WHERE u.id = o.user_id AND u.status = 'ACTIVE'
+);
+
+-- JOIN (usually faster for small tables)
+SELECT DISTINCT o.* 
+FROM orders o 
+JOIN users u ON u.id = o.user_id 
+WHERE u.status = 'ACTIVE';
+
+-- Rule: EXISTS stops on first match → Better for correlated subqueries
+-- JOIN processes all matches → Better for small result sets
+```
+
+**Example 2: IN vs JOIN**
+```sql
+-- IN subquery (executed once, then hash lookup)
+SELECT * FROM orders 
+WHERE user_id IN (SELECT id FROM users WHERE status = 'ACTIVE');
+
+-- JOIN (processes all matches)
+SELECT DISTINCT o.* 
+FROM orders o 
+JOIN users u ON o.user_id = u.id 
+WHERE u.status = 'ACTIVE';
+
+-- For large lists: JOIN usually faster (optimizer can optimize better)
+-- For small lists: IN might be faster (simple hash lookup)
+```
+
+#### Slow Query Troubleshooting Flowchart
+
+```
+Slow Query Detected
+        ↓
+1. Run EXPLAIN
+        ↓
+   Type = ALL? → Full table scan → Add index
+        ↓
+   Type = index? → Check Extra column
+        ↓
+   Extra = Using filesort? → Add ORDER BY index
+        ↓
+   Extra = Using temporary? → Optimize GROUP BY / DISTINCT
+        ↓
+2. Check Index Usage
+        ↓
+   No index used? → Add appropriate index
+        ↓
+   Wrong index? → Drop unused indexes, add correct one
+        ↓
+3. Check Rows Examined
+        ↓
+   Too many rows? → Add WHERE filter, improve index selectivity
+        ↓
+4. Check Join Operations
+        ↓
+   Missing join index? → Add index on join columns
+        ↓
+   Join order suboptimal? → Use STRAIGHT_JOIN or query hints
+        ↓
+5. Check Query Structure
+        ↓
+   Unnecessary columns? → SELECT only needed columns
+        ↓
+   N+1 queries? → Use JOIN or batch queries
+        ↓
+   Subquery inefficient? → Rewrite as JOIN
+```
+
+**Code Example:**
+```sql
+-- Slow query
+SELECT * FROM orders o 
+WHERE o.created_at > DATE_SUB(NOW(), INTERVAL 30 DAY)
+ORDER BY o.amount DESC 
+LIMIT 10;
+
+-- EXPLAIN shows: type=ALL, rows=1000000, Extra=Using filesort
+
+-- Optimization 1: Add index on created_at
+CREATE INDEX idx_created_at ON orders(created_at);
+-- Still slow (ORDER BY filesort)
+
+-- Optimization 2: Add composite index
+CREATE INDEX idx_created_amount ON orders(created_at, amount DESC);
+-- Now: type=range, key=idx_created_amount, Extra=Using index condition
+-- ✅ Much faster!
+```
+
+### 3.6.2. Index Design Solutions
+
+#### B+ Tree Deep Dive
+
+**Why B+ Tree for Databases?**
+
+**1. Disk I/O Optimization**
+- B+ Tree nodes store multiple keys → Fewer disk reads
+- Typical node size = 16KB (matches disk page size)
+- Height = 3-4 for millions of rows → Only 3-4 disk I/O per lookup
+
+**2. Range Queries**
+- B+ Tree leaves are linked → Sequential scan efficient
+- Example: `SELECT * FROM orders WHERE created_at BETWEEN '2024-01-01' AND '2024-01-31'`
+- → Find start key → Traverse linked leaves → Very fast
+
+**3. Compared to Binary Search Tree:**
+| Aspect | BST | B+ Tree |
+| --- | --- | --- |
+| **Height** | O(log n) | O(log_B n) where B = branching factor (~200) |
+| **Disk I/O** | O(log n) | O(log_B n) ≈ 3-4 I/O for 1M rows |
+| **Range query** | Slow (tree traversal) | Fast (linked leaves) |
+
+**Index Page Structure:**
+
+```
+B+ Tree Node (Page = 16KB)
+├─ Page Header (96 bytes)
+├─ Index Records (key + pointer)
+│  └─ Record: (key_value, page_pointer/row_pointer)
+├─ Free Space
+└─ Page Footer (8 bytes)
+```
+
+**Clustered vs Non-Clustered Index:**
+
+**Clustered Index (Primary Key in InnoDB):**
+- ✅ Data rows stored in B+ Tree order
+- ✅ Only 1 per table
+- ✅ Fast for range queries (data already sorted)
+
+**Non-Clustered Index (Secondary Index):**
+- ✅ Separate B+ Tree, points to data rows
+- ✅ Multiple per table
+- ✅ Extra lookup needed (secondary index → primary key → data row)
+
+**Example:**
+```sql
+CREATE TABLE orders (
+    id BIGINT PRIMARY KEY,              -- Clustered index
+    user_id BIGINT,
+    status VARCHAR(20),
+    INDEX idx_user_id (user_id)         -- Non-clustered index
+);
+
+-- Query using clustered index (PRIMARY)
+SELECT * FROM orders WHERE id = 123;
+-- → Direct access to data (no extra lookup)
+
+-- Query using non-clustered index
+SELECT * FROM orders WHERE user_id = 456;
+-- → 1. Find user_id = 456 in idx_user_id → Get id = 789
+-- → 2. Find id = 789 in PRIMARY index → Get data row
+-- → 2 disk I/O (secondary index + primary index)
+```
+
+#### Index Anti-Patterns
+
+**1. Too Many Indexes (Write Penalty)**
+
+**Problem:** Each index slows down INSERT/UPDATE/DELETE.
+
+**Example:**
+```sql
+CREATE TABLE orders (
+    id BIGINT PRIMARY KEY,
+    user_id BIGINT,
+    product_id BIGINT,
+    status VARCHAR(20),
+    amount DECIMAL(10,2),
+    created_at TIMESTAMP,
+    
+    -- Too many indexes!
+    INDEX idx_user_id (user_id),
+    INDEX idx_product_id (product_id),
+    INDEX idx_status (status),
+    INDEX idx_amount (amount),
+    INDEX idx_created_at (created_at),
+    INDEX idx_user_status (user_id, status),
+    INDEX idx_user_created (user_id, created_at),
+    INDEX idx_product_status (product_id, status)
+    -- ... 10+ indexes
+);
+
+-- Each INSERT → Update all 10+ indexes → Very slow!
+```
+
+**Solution:**
+- ✅ Only create indexes for frequently queried columns
+- ✅ Use composite indexes instead of multiple single-column indexes
+- ✅ Monitor index usage: `SHOW INDEX FROM orders;`
+
+**2. Low Selectivity Indexes**
+
+**Problem:** Index on low selectivity column doesn't help much.
+
+**Example:**
+```sql
+-- Table: 1,000,000 orders
+-- Column: status (only 5 values: PENDING, PROCESSING, SHIPPED, DELIVERED, CANCELLED)
+
+CREATE INDEX idx_status ON orders(status);
+-- Selectivity = 5 / 1,000,000 = 0.000005 (0.0005%)
+
+-- Query still scans ~200,000 rows (1M / 5) → Index doesn't help much
+SELECT * FROM orders WHERE status = 'PENDING';
+```
+
+**Solution:**
+- ✅ Combine with high selectivity column
+- ✅ Example: `CREATE INDEX idx_user_status ON orders(user_id, status);`
+
+**3. Function-Based Index Issues**
+
+**Problem:** Functions on indexed columns prevent index usage.
+
+**Example:**
+```sql
+CREATE INDEX idx_created_at ON orders(created_at);
+
+-- ❌ Index cannot be used (function on column)
+SELECT * FROM orders WHERE DATE(created_at) = '2024-01-01';
+-- EXPLAIN shows: type=ALL (full table scan)
+
+-- ✅ Fix: Query without function
+SELECT * FROM orders 
+WHERE created_at >= '2024-01-01' AND created_at < '2024-01-02';
+-- EXPLAIN shows: type=range, key=idx_created_at
+```
+
+**Alternative: Generated Columns (MySQL 5.7+):**
+```sql
+-- Create generated column
+ALTER TABLE orders 
+ADD COLUMN created_date DATE AS (DATE(created_at)) STORED;
+
+-- Index generated column
+CREATE INDEX idx_created_date ON orders(created_date);
+
+-- Now can use index
+SELECT * FROM orders WHERE created_date = '2024-01-01';
+```
+
+### 3.6.3. Transaction Isolation Problems Chi tiết
+
+#### Dirty Read Scenario + Solution
+
+**Scenario:**
+```sql
+-- Transaction 1 (T1)
+BEGIN;
+UPDATE accounts SET balance = balance - 100 WHERE id = 1;
+-- balance: 1000 → 900 (not committed yet)
+
+-- Transaction 2 (T2) - READ UNCOMMITTED
+SELECT balance FROM accounts WHERE id = 1;
+-- Reads 900 (dirty data!)
+
+-- T1: ROLLBACK;
+-- balance back to 1000
+
+-- T2: Used wrong data (900) for calculations
+```
+
+**Solution: READ COMMITTED**
+```sql
+-- T2: Use READ COMMITTED isolation level
+SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
+BEGIN;
+SELECT balance FROM accounts WHERE id = 1;
+-- Waits until T1 commits → Reads 1000 (correct)
+```
+
+#### Non-Repeatable Read Scenario + Solution
+
+**Scenario:**
+```sql
+-- T1: Read initial value
+BEGIN;
+SELECT balance FROM accounts WHERE id = 1;  -- Returns 1000
+
+-- T2: Update and commit
+BEGIN;
+UPDATE accounts SET balance = balance + 100 WHERE id = 1;
+COMMIT;  -- balance: 1000 → 1100
+
+-- T1: Read again
+SELECT balance FROM accounts WHERE id = 1;  -- Returns 1100 (different!)
+-- Non-repeatable read: Same query, different result
+```
+
+**Solution: REPEATABLE READ**
+```sql
+-- T1: Use REPEATABLE READ
+SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+BEGIN;
+SELECT balance FROM accounts WHERE id = 1;  -- Returns 1000
+
+-- T2: Update (blocked or creates new version)
+
+-- T1: Read again
+SELECT balance FROM accounts WHERE id = 1;  -- Still returns 1000 (consistent)
+-- MVCC creates snapshot → Consistent reads
+```
+
+#### Phantom Read Scenario + Solution
+
+**Scenario:**
+```sql
+-- T1: Count orders
+BEGIN;
+SELECT COUNT(*) FROM orders WHERE status = 'PENDING';  -- Returns 10
+
+-- T2: Insert new order
+BEGIN;
+INSERT INTO orders (status) VALUES ('PENDING');
+COMMIT;  -- Now 11 PENDING orders
+
+-- T1: Count again
+SELECT COUNT(*) FROM orders WHERE status = 'PENDING';  -- Returns 11 (phantom row!)
+-- Phantom read: New row appears
+```
+
+**Solution: SERIALIZABLE**
+```sql
+-- T1: Use SERIALIZABLE
+SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+BEGIN;
+SELECT COUNT(*) FROM orders WHERE status = 'PENDING';  -- Locks range
+-- T2: INSERT blocked until T1 commits
+```
+
+**Alternative: Gap Locks (InnoDB REPEATABLE READ prevents phantom reads)**
+```sql
+-- InnoDB uses gap locks in REPEATABLE READ
+-- Gap lock: Locks gap between index records → Prevents INSERT
+-- → REPEATABLE READ also prevents phantom reads in InnoDB!
+```
+
+#### Lost Update Problem Variants
+
+**Problem:** Two transactions update same row → Last write wins (loses first update).
+
+**Scenario:**
+```sql
+-- Initial: balance = 1000
+
+-- T1: Deposit 100
+BEGIN;
+SELECT balance FROM accounts WHERE id = 1;  -- 1000
+UPDATE accounts SET balance = 1000 + 100 WHERE id = 1;
+-- Not committed yet
+
+-- T2: Withdraw 50
+BEGIN;
+SELECT balance FROM accounts WHERE id = 1;  -- Still 1000 (READ UNCOMMITTED or dirty read)
+UPDATE accounts SET balance = 1000 - 50 WHERE id = 1;
+COMMIT;  -- balance = 950
+
+-- T1: Commit
+COMMIT;  -- balance = 1100 (overwrites T2's update!)
+-- Lost: T2's withdrawal lost
+```
+
+**Solution 1: Optimistic Locking (Version Column)**
+```sql
+-- Add version column
+ALTER TABLE accounts ADD COLUMN version INT DEFAULT 0;
+
+-- T1: Deposit
+BEGIN;
+SELECT balance, version FROM accounts WHERE id = 1;
+-- balance = 1000, version = 0
+UPDATE accounts 
+SET balance = 1100, version = version + 1 
+WHERE id = 1 AND version = 0;
+COMMIT;  -- Success: version = 1
+
+-- T2: Withdraw (starts with version = 0, but T1 updated to 1)
+BEGIN;
+SELECT balance, version FROM accounts WHERE id = 1;
+-- balance = 1100, version = 1
+UPDATE accounts 
+SET balance = 1100 - 50, version = version + 1 
+WHERE id = 1 AND version = 0;  -- Fails: version = 1, not 0
+-- UPDATE affects 0 rows → Retry or report conflict
+```
+
+**Java Code:**
+```java
+@Transactional
+public void deposit(Long accountId, BigDecimal amount) {
+    Account account = accountRepository.findById(accountId).orElseThrow();
+    int oldVersion = account.getVersion();
+    
+    account.setBalance(account.getBalance().add(amount));
+    account.setVersion(oldVersion + 1);
+    
+    int updated = accountRepository.updateWithVersion(
+        accountId, oldVersion, account.getBalance(), account.getVersion());
+    
+    if (updated == 0) {
+        throw new OptimisticLockException("Account was modified by another transaction");
+        // Retry logic here
+    }
+}
+```
+
+**Solution 2: Pessimistic Locking (SELECT FOR UPDATE)**
+```sql
+-- T1: Deposit
+BEGIN;
+SELECT balance FROM accounts WHERE id = 1 FOR UPDATE;  -- Locks row
+-- T2: SELECT ... FOR UPDATE → Blocked until T1 commits
+
+UPDATE accounts SET balance = balance + 100 WHERE id = 1;
+COMMIT;  -- Releases lock
+
+-- T2: Now can proceed
+SELECT balance FROM accounts WHERE id = 1 FOR UPDATE;  -- Gets lock
+-- balance = 1100 (sees T1's update)
+UPDATE accounts SET balance = balance - 50 WHERE id = 1;
+COMMIT;
+-- Final: balance = 1050 ✅
+```
+
+**Java Code:**
+```java
+@Transactional
+public void deposit(Long accountId, BigDecimal amount) {
+    // Pessimistic lock
+    Account account = accountRepository.findByIdLocked(accountId);  // SELECT ... FOR UPDATE
+    
+    account.setBalance(account.getBalance().add(amount));
+    accountRepository.save(account);
+    // Lock released on commit
+}
+```
+
+**Solution 3: Atomic Operations (UPDATE ... SET balance = balance + ?)**
+```sql
+-- T1: Deposit (atomic)
+UPDATE accounts SET balance = balance + 100 WHERE id = 1;
+-- Atomic: Reads current value, adds 100, writes → No lost update
+
+-- T2: Withdraw (atomic, can run concurrently)
+UPDATE accounts SET balance = balance - 50 WHERE id = 1;
+-- Atomic: Reads current value, subtracts 50, writes → No lost update
+
+-- Final: balance = 1000 + 100 - 50 = 1050 ✅
+```
+
+**Java Code:**
+```java
+@Transactional
+public void deposit(Long accountId, BigDecimal amount) {
+    // Atomic update
+    accountRepository.updateBalance(accountId, amount);  // UPDATE ... SET balance = balance + ?
+    // No need to lock → Database handles atomicity
+}
+```
+
+**Comparison:**
+
+| Solution | Concurrency | Performance | Use Case |
+| --- | --- | --- | --- |
+| **Optimistic Locking** | ✅ High (no blocking) | ✅ High (no locks) | Low contention, read-heavy |
+| **Pessimistic Locking** | ⚠️ Low (blocking) | ⚠️ Low (locks) | High contention, critical updates |
+| **Atomic Operations** | ✅ High | ✅ Highest | Simple increments/decrements |
+
+### 3.6.4. Sharding Strategies Chi tiết
+
+#### Vertical Sharding (Split by Table)
+
+**Concept:** Split tables across databases by function.
+
+**Example:**
+```
+Single Database (Monolith)
+├─ users table
+├─ products table
+├─ orders table
+└─ payments table
+
+↓ Vertical Sharding
+
+Database 1 (User Service)
+├─ users table
+└─ profiles table
+
+Database 2 (Product Service)
+└─ products table
+
+Database 3 (Order Service)
+└─ orders table
+
+Database 4 (Payment Service)
+└─ payments table
+```
+
+**Pros:**
+- ✅ Simple (one table per database)
+- ✅ Independent scaling
+- ✅ Clear service boundaries
+
+**Cons:**
+- ❌ Cannot JOIN across databases
+- ❌ Distributed transactions needed
+
+#### Horizontal Sharding (Split by Row)
+
+**1. Range-Based Sharding**
+
+**Concept:** Split by ID ranges.
+
+**Example:**
+```sql
+-- Shard 1: user_id 1 - 1,000,000
+Database 1: SELECT * FROM users WHERE user_id BETWEEN 1 AND 1000000;
+
+-- Shard 2: user_id 1,000,001 - 2,000,000
+Database 2: SELECT * FROM users WHERE user_id BETWEEN 1000001 AND 2000000;
+
+-- Shard 3: user_id 2,000,001 - 3,000,000
+Database 3: SELECT * FROM users WHERE user_id BETWEEN 2000001 AND 3000000;
+```
+
+**Pros:**
+- ✅ Simple routing logic
+- ✅ Easy to add new shards (extend range)
+
+**Cons:**
+- ❌ Hot spots (new users → last shard overloaded)
+- ❌ Rebalancing difficult (need to migrate data)
+
+**2. Hash-Based Sharding**
+
+**Concept:** `hash(user_id) % N` → Shard N.
+
+**Example:**
+```java
+public class ShardRouter {
+    private static final int NUM_SHARDS = 4;
+    
+    public int getShard(Long userId) {
+        return (int) (userId % NUM_SHARDS);
+    }
+    
+    public String getShardConnection(Long userId) {
+        int shard = getShard(userId);
+        return "jdbc:mysql://db" + shard + ":3306/order_db";
+    }
+}
+
+// userId = 123 → shard = 123 % 4 = 3 → db3
+// userId = 456 → shard = 456 % 4 = 0 → db0
+```
+
+**Pros:**
+- ✅ Even distribution (no hot spots)
+- ✅ Simple routing
+
+**Cons:**
+- ❌ Rebalancing requires rehashing all data (expensive)
+
+**3. Consistent Hashing**
+
+**Concept:** Hash ring → Maps keys to shards → Minimal rehashing on shard addition/removal.
+
+**Code Example:**
+```java
+import java.util.SortedMap;
+import java.util.TreeMap;
+import java.security.MessageDigest;
+
+public class ConsistentHashRouter {
+    private final SortedMap<Long, String> ring = new TreeMap<>();
+    private final int virtualNodes = 150; // Virtual nodes for better distribution
+    
+    public ConsistentHashRouter(List<String> shards) {
+        for (String shard : shards) {
+            for (int i = 0; i < virtualNodes; i++) {
+                String virtualNode = shard + "#" + i;
+                long hash = hash(virtualNode);
+                ring.put(hash, shard);
+            }
+        }
+    }
+    
+    public String getShard(String key) {
+        if (ring.isEmpty()) return null;
+        
+        long hash = hash(key);
+        SortedMap<Long, String> tailMap = ring.tailMap(hash);
+        long nodeHash = tailMap.isEmpty() ? ring.firstKey() : tailMap.firstKey();
+        return ring.get(nodeHash);
+    }
+    
+    private long hash(String key) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("MD5");
+            byte[] digest = md.digest(key.getBytes());
+            return ((long) (digest[3] & 0xFF) << 24) |
+                   ((long) (digest[2] & 0xFF) << 16) |
+                   ((long) (digest[1] & 0xFF) << 8) |
+                   ((long) (digest[0] & 0xFF));
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+}
+```
+
+**Benefits:**
+- ✅ Only rehash K/N keys when adding/removing shard (K = keys, N = shards)
+- ✅ Better load distribution
+
+**4. Geographic Sharding**
+
+**Concept:** Split by user location.
+
+**Example:**
+```java
+public class GeographicShardRouter {
+    public String getShard(String country) {
+        switch (country) {
+            case "US": case "CA": case "MX":
+                return "db-us";  // North America shard
+            case "CN": case "JP": case "KR":
+                return "db-asia";  // Asia shard
+            case "GB": case "DE": case "FR":
+                return "db-eu";  // Europe shard
+            default:
+                return "db-default";
+        }
+    }
+}
+```
+
+**Pros:**
+- ✅ Low latency (data closer to users)
+- ✅ Compliance (data residency requirements)
+
+**Cons:**
+- ❌ Uneven distribution (some regions larger)
+- ❌ Cross-region queries expensive
+
+#### Sharding Key Selection Criteria
+
+**Good Sharding Key:**
+- ✅ High cardinality (many unique values)
+- ✅ Even distribution (no hot spots)
+- ✅ Query pattern aligned (most queries filter by sharding key)
+
+**Bad Sharding Key:**
+- ❌ Low cardinality (gender: only 2 values)
+- ❌ Skewed distribution (90% data in one shard)
+- ❌ Not used in queries (cannot route queries efficiently)
+
+**Example:**
+```sql
+-- ✅ Good: user_id (high cardinality, even distribution, used in queries)
+SELECT * FROM orders WHERE user_id = 123;
+-- → Route to shard: hash(123) % N
+
+-- ❌ Bad: status (low cardinality: only 5 values)
+SELECT * FROM orders WHERE status = 'PENDING';
+-- → Need to query all shards (cross-shard query)
+```
+
+#### Cross-Shard Query Solutions
+
+**Problem:** Query doesn't contain sharding key → Need to query all shards.
+
+**Solution 1: Application-Level Merge**
+```java
+@Service
+public class OrderService {
+    @Autowired
+    private List<OrderRepository> shardRepositories;
+    
+    public List<Order> findByStatus(String status) {
+        List<Order> results = new ArrayList<>();
+        
+        // Query all shards
+        for (OrderRepository repo : shardRepositories) {
+            List<Order> shardResults = repo.findByStatus(status);
+            results.addAll(shardResults);
+        }
+        
+        // Merge and sort
+        results.sort((a, b) -> b.getCreatedAt().compareTo(a.getCreatedAt()));
+        return results;
+    }
+}
+```
+
+**Solution 2: Database Middleware (Sharding-JDBC, MyCat)**
+
+**Sharding-JDBC** (as shown in previous section) handles routing automatically.
+
+**MyCat** (Proxy-based):
+```xml
+<!-- mycat-schema.xml -->
+<schema name="order_db">
+    <table name="orders" dataNode="dn1,dn2,dn3" rule="mod-long"/>
+</schema>
+
+<dataNode name="dn1" dataHost="db1" database="order_db"/>
+<dataNode name="dn2" dataHost="db2" database="order_db"/>
+<dataNode name="dn3" dataHost="db3" database="order_db"/>
+```
+
+**Query goes through MyCat proxy → Routes to correct shard(s).**
+
+### 3.6.5. MySQL Production Tuning
+
+#### innodb_buffer_pool_size Calculation
+
+**Concept:** InnoDB buffer pool caches data and index pages in memory.
+
+**Formula:**
+```
+innodb_buffer_pool_size = Total RAM - OS - MySQL overhead - Other services
+                        ≈ 70-80% of total RAM for dedicated database server
+```
+
+**Example:**
+```
+Server: 32GB RAM
+OS + Other: 4GB
+MySQL overhead: 2GB
+Available: 32GB - 4GB - 2GB = 26GB
+
+innodb_buffer_pool_size = 24GB (≈75% of total RAM)
+```
+
+**Configuration:**
+```sql
+-- Check current setting
+SHOW VARIABLES LIKE 'innodb_buffer_pool_size';
+-- Output: 2147483648 (2GB)
+
+-- Set in my.cnf
+[mysqld]
+innodb_buffer_pool_size = 24G
+
+-- Dynamic resize (MySQL 5.7+)
+SET GLOBAL innodb_buffer_pool_size = 25769803776;  -- 24GB
+```
+
+**Best Practice:**
+- ✅ Set equal to 70-80% of RAM (dedicated DB server)
+- ✅ Use `innodb_buffer_pool_instances = CPU cores` (reduce lock contention)
+- ✅ Monitor `Innodb_buffer_pool_read_requests` vs `Innodb_buffer_pool_reads` (hit ratio should be >99%)
+
+#### Connection Pool Sizing (HikariCP)
+
+**Formula:**
+```
+connections = ((core_count * 2) + effective_spindle_count)
+```
+
+**Example:**
+```
+CPU cores: 8
+Effective spindle count (SSD): 1
+Connections = (8 * 2) + 1 = 17 ≈ 20
+```
+
+**HikariCP Configuration:**
+```yaml
+spring:
+  datasource:
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      leak-detection-threshold: 60000
+```
+
+**Best Practice:**
+- ✅ Start with 10-20 connections, monitor and adjust
+- ✅ Too many connections → Context switching overhead
+- ✅ Too few connections → Request queuing
+
+#### Slow Query Log Analysis
+
+**Enable Slow Query Log:**
+```sql
+-- Enable
+SET GLOBAL slow_query_log = 'ON';
+SET GLOBAL long_query_time = 2;  -- Log queries > 2 seconds
+SET GLOBAL slow_query_log_file = '/var/log/mysql/slow.log';
+
+-- Or in my.cnf
+[mysqld]
+slow_query_log = 1
+long_query_time = 2
+slow_query_log_file = /var/log/mysql/slow.log
+```
+
+**Analyze with mysqldumpslow:**
+```bash
+# Top 10 slowest queries
+mysqldumpslow -s t -t 10 /var/log/mysql/slow.log
+
+# Top 10 most frequent slow queries
+mysqldumpslow -s c -t 10 /var/log/mysql/slow.log
+
+# Queries with specific pattern
+mysqldumpslow -g "SELECT.*FROM orders" /var/log/mysql/slow.log
+```
+
+**Use pt-query-digest (Percona Toolkit):**
+```bash
+pt-query-digest /var/log/mysql/slow.log > slow_report.txt
+
+# Output shows:
+# - Top slowest queries
+# - Query execution statistics
+# - Index recommendations
+```
+
+#### GTID-Based Replication Setup
+
+**GTID (Global Transaction Identifier)** ensures transaction consistency across replicas.
+
+**Configuration (Master):**
+```cnf
+[mysqld]
+server-id = 1
+log-bin = mysql-bin
+gtid-mode = ON
+enforce-gtid-consistency = ON
+```
+
+**Configuration (Slave):**
+```cnf
+[mysqld]
+server-id = 2
+relay-log = relay-bin
+gtid-mode = ON
+enforce-gtid-consistency = ON
+read-only = ON  # Slave is read-only
+```
+
+**Setup Replication:**
+```sql
+-- On Slave
+CHANGE MASTER TO
+    MASTER_HOST = 'master-ip',
+    MASTER_PORT = 3306,
+    MASTER_USER = 'replication_user',
+    MASTER_PASSWORD = 'password',
+    MASTER_AUTO_POSITION = 1;  -- Use GTID-based positioning
+
+START SLAVE;
+
+-- Check status
+SHOW SLAVE STATUS\G
+-- Should show: Slave_IO_Running: Yes, Slave_SQL_Running: Yes
+```
+
+**Benefits:**
+- ✅ Automatic failover (know exact transaction position)
+- ✅ No binlog file/position management
+- ✅ Consistent replication (transaction-based, not statement-based)
+
+---
+
 ## Tổng kết Part 3: Database & Storage
 
 Đã hoàn thành **Part 3: Database & Storage** với nội dung toàn diện:

@@ -1664,6 +1664,1076 @@ Replication lag > 10s → Add read replicas
 
 ---
 
+## 8.11. Advanced High Availability & Production Solutions
+
+### 8.11.1. Rate Limiting Production Implementation
+
+#### Redis-Based Rate Limiter (Atomic Lua Script)
+
+**Problem:** Multiple instances → Race condition khi check + increment.
+
+**Solution: Atomic Lua Script**
+```lua
+-- Lua script: Sliding window log
+local key = KEYS[1]
+local window = tonumber(ARGV[1])  -- Window size in seconds
+local limit = tonumber(ARGV[2])   -- Request limit
+local now = tonumber(ARGV[3])     -- Current timestamp
+
+-- Remove old entries (outside window)
+redis.call('ZREMRANGEBYSCORE', key, 0, now - window * 1000)
+
+-- Count current requests in window
+local count = redis.call('ZCARD', key)
+
+if count < limit then
+    -- Add current request
+    redis.call('ZADD', key, now, now)
+    redis.call('EXPIRE', key, window)
+    return {1, limit - count - 1}  -- Allowed, remaining
+else
+    return {0, 0}  -- Rejected
+end
+```
+
+**Java Implementation:**
+```java
+@Service
+public class RedisRateLimiter {
+    @Autowired
+    private RedisTemplate<String, String> redis;
+    
+    private static final String LUA_SCRIPT = 
+        "local key = KEYS[1] " +
+        "local window = tonumber(ARGV[1]) " +
+        "local limit = tonumber(ARGV[2]) " +
+        "local now = tonumber(ARGV[3]) " +
+        "redis.call('ZREMRANGEBYSCORE', key, 0, now - window * 1000) " +
+        "local count = redis.call('ZCARD', key) " +
+        "if count < limit then " +
+        "  redis.call('ZADD', key, now, now) " +
+        "  redis.call('EXPIRE', key, window) " +
+        "  return {1, limit - count - 1} " +
+        "else " +
+        "  return {0, 0} " +
+        "end";
+    
+    public RateLimitResult isAllowed(String key, int limit, int windowSeconds) {
+        DefaultRedisScript<List> script = new DefaultRedisScript<>();
+        script.setScriptText(LUA_SCRIPT);
+        script.setResultType(List.class);
+        
+        long now = System.currentTimeMillis();
+        List<Long> result = redis.execute(script, 
+            Collections.singletonList("rate_limit:" + key),
+            String.valueOf(windowSeconds),
+            String.valueOf(limit),
+            String.valueOf(now));
+        
+        boolean allowed = result.get(0) == 1;
+        long remaining = result.get(1);
+        
+        return new RateLimitResult(allowed, remaining);
+    }
+}
+```
+
+**Distributed Rate Limiting (Multiple Instances):**
+```java
+// All instances share same Redis key → Atomic Lua script ensures consistency
+// Instance 1 checks → Instance 2 checks → Both get accurate count
+
+@RestController
+public class ApiController {
+    @Autowired
+    private RedisRateLimiter rateLimiter;
+    
+    @GetMapping("/api/data")
+    public ResponseEntity<?> getData(@RequestParam Long userId) {
+        // Per-user rate limiting
+        RateLimitResult result = rateLimiter.isAllowed("user:" + userId, 100, 60);
+        
+        if (!result.isAllowed()) {
+            return ResponseEntity.status(429)
+                .header("X-RateLimit-Remaining", String.valueOf(result.getRemaining()))
+                .header("Retry-After", "60")
+                .body("Too Many Requests");
+        }
+        
+        // Process request
+        return ResponseEntity.ok(dataService.getData(userId));
+    }
+}
+```
+
+#### Spring Cloud Gateway Rate Limiting
+
+**Configuration:**
+```yaml
+spring:
+  cloud:
+    gateway:
+      routes:
+        - id: api-route
+          uri: lb://api-service
+          predicates:
+            - Path=/api/**
+          filters:
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 10  # 10 requests per second
+                redis-rate-limiter.burstCapacity: 20  # Burst capacity: 20
+                redis-rate-limiter.requestedTokens: 1  # Tokens per request
+                key-resolver: "#{@userKeyResolver}"  # Per-user limiting
+```
+
+**Custom Key Resolver (Per-User vs Per-IP):**
+```java
+@Configuration
+public class RateLimitConfig {
+    
+    // Per-user rate limiting
+    @Bean
+    public KeyResolver userKeyResolver() {
+        return exchange -> {
+            String userId = exchange.getRequest().getHeaders()
+                .getFirst("X-User-Id");
+            return Mono.just(userId != null ? userId : "anonymous");
+        };
+    }
+    
+    // Per-IP rate limiting
+    @Bean
+    public KeyResolver ipKeyResolver() {
+        return exchange -> {
+            String clientIp = exchange.getRequest().getRemoteAddress()
+                .getAddress().getHostAddress();
+            return Mono.just(clientIp);
+        };
+    }
+}
+```
+
+**Custom Rate Limiter:**
+```java
+@Component
+public class CustomRateLimiter implements RateLimiter {
+    @Override
+    public Mono<Response> isAllowed(String routeId, String id) {
+        // Custom rate limiting logic
+        // - Check user tier (VIP users have higher limits)
+        // - Check endpoint (different limits per endpoint)
+        
+        UserTier tier = getUserTier(id);
+        int limit = getLimitForTier(tier);
+        
+        return checkLimit(id, limit);
+    }
+}
+```
+
+#### Nginx Rate Limiting
+
+**Configuration:**
+```nginx
+# Define rate limit zone
+http {
+    # Zone: 10MB shared memory, 10 requests/second
+    limit_req_zone $binary_remote_addr zone=api_limit:10m rate=10r/s;
+    
+    # Zone for user-based limiting (with user_id header)
+    map $http_x_user_id $user_id {
+        default $binary_remote_addr;
+        ~.+ $http_x_user_id;
+    }
+    limit_req_zone $user_id zone=user_limit:10m rate=100r/s;
+    
+    server {
+        listen 80;
+        server_name api.example.com;
+        
+        # Apply rate limiting
+        location /api/ {
+            limit_req zone=api_limit burst=20 nodelay;
+            # burst=20: Allow 20 requests over limit before rejecting
+            # nodelay: Don't delay, reject immediately after burst
+            
+            proxy_pass http://backend;
+        }
+        
+        # User-based rate limiting
+        location /api/user/ {
+            limit_req zone=user_limit burst=50 nodelay;
+            proxy_pass http://backend;
+        }
+        
+        # Return 429 Too Many Requests
+        limit_req_status 429;
+    }
+}
+```
+
+**Burst Handling:**
+```nginx
+# Without burst:
+# Request 11 at time T → Rejected immediately
+
+# With burst=20:
+# Request 11-30 at time T → Queued, processed gradually
+# Request 31+ at time T → Rejected immediately
+
+# With nodelay:
+# Request 11-30 → Processed immediately (no queuing)
+# Request 31+ → Rejected immediately
+```
+
+### 8.11.2. Circuit Breaker Advanced
+
+#### Resilience4j Deep Dive
+
+**CircuitBreaker + Retry + Bulkhead Combo:**
+```java
+@Configuration
+public class ResilienceConfig {
+    
+    @Bean
+    public CircuitBreaker circuitBreaker() {
+        return CircuitBreaker.of("paymentService", CircuitBreakerConfig.custom()
+            .failureRateThreshold(50)  // Open if 50% requests fail
+            .waitDurationInOpenState(Duration.ofSeconds(30))  // Wait 30s before half-open
+            .slidingWindowSize(10)  // Last 10 requests
+            .minimumNumberOfCalls(5)  // Need at least 5 calls before opening
+            .build());
+    }
+    
+    @Bean
+    public Retry retry() {
+        return Retry.of("paymentService", RetryConfig.custom()
+            .maxAttempts(3)  // Retry 3 times
+            .waitDuration(Duration.ofMillis(100))  // Wait 100ms between retries
+            .retryOnException(e -> e instanceof TimeoutException)
+            .build());
+    }
+    
+    @Bean
+    public Bulkhead bulkhead() {
+        return Bulkhead.of("paymentService", BulkheadConfig.custom()
+            .maxConcurrentCalls(10)  // Max 10 concurrent calls
+            .maxWaitDuration(Duration.ofMillis(1000))  // Max wait 1s if full
+            .build());
+    }
+}
+```
+
+**Using All Three Together:**
+```java
+@Service
+public class PaymentService {
+    private final CircuitBreaker circuitBreaker;
+    private final Retry retry;
+    private final Bulkhead bulkhead;
+    
+    public PaymentService(CircuitBreaker circuitBreaker, Retry retry, Bulkhead bulkhead) {
+        this.circuitBreaker = circuitBreaker;
+        this.retry = retry;
+        this.bulkhead = bulkhead;
+    }
+    
+    public PaymentResult processPayment(PaymentRequest request) {
+        // Chain: Bulkhead → Retry → CircuitBreaker
+        Supplier<PaymentResult> decorated = Bulkhead.decorateSupplier(bulkhead,
+            Retry.decorateSupplier(retry,
+                CircuitBreaker.decorateSupplier(circuitBreaker,
+                    () -> callPaymentGateway(request))));
+        
+        return Try.ofSupplier(decorated)
+            .recover(PaymentException.class, e -> fallbackPayment(request))
+            .get();
+    }
+    
+    private PaymentResult callPaymentGateway(PaymentRequest request) {
+        // Actual payment gateway call
+        return paymentGatewayClient.charge(request);
+    }
+    
+    private PaymentResult fallbackPayment(PaymentRequest request) {
+        // Fallback: Queue for later processing
+        messageQueue.send("payment-retry", request);
+        return new PaymentResult("QUEUED", "Payment queued for retry");
+    }
+}
+```
+
+**Metrics Integration (Micrometer):**
+```java
+@Configuration
+public class MetricsConfig {
+    @Bean
+    public MeterRegistry meterRegistry() {
+        return new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
+    }
+    
+    @Bean
+    public CircuitBreakerRegistry circuitBreakerRegistry(MeterRegistry meterRegistry) {
+        CircuitBreakerRegistry registry = CircuitBreakerRegistry.ofDefaults();
+        CircuitBreakerMetrics.ofCircuitBreakerRegistry(registry).bindTo(meterRegistry);
+        return registry;
+    }
+}
+```
+
+**Dashboard (Prometheus + Grafana):**
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: 'resilience4j'
+    scrape_interval: 5s
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['localhost:8080']
+```
+
+**Grafana Dashboard Queries:**
+```
+# Circuit Breaker State
+resilience4j_circuitbreaker_state{name="paymentService"}
+
+# Failure Rate
+resilience4j_circuitbreaker_calls{name="paymentService",kind="failed"}
+
+# Throughput
+rate(resilience4j_circuitbreaker_calls{name="paymentService"}[5m])
+```
+
+#### Circuit Breaker Tuning
+
+**Failure Rate Threshold Calculation:**
+```java
+// Example: 100 requests, 10 failures → 10% failure rate
+// Threshold = 20% → Circuit stays closed (10% < 20%)
+
+// But if 25 failures → 25% failure rate → Circuit opens (25% > 20%)
+
+// Tuning guide:
+// - Set threshold based on acceptable error rate
+// - Too low (5%) → Opens too easily (false positives)
+// - Too high (90%) → Doesn't protect system (allows too many errors)
+// - Recommended: 20-50% for most services
+```
+
+**Ring Buffer Size Selection:**
+```java
+CircuitBreakerConfig.custom()
+    .slidingWindowSize(100)  // Last 100 calls (for PERCENTAGE-based)
+    // OR
+    .slidingWindowSize(10)  // Last 10 calls (for COUNT-based)
+    
+    // Trade-off:
+    // - Larger buffer → More accurate (but slower to react)
+    // - Smaller buffer → Faster reaction (but less accurate)
+    // - Recommended: 50-100 for PERCENTAGE, 10-20 for COUNT
+```
+
+**Half-Open Wait Duration:**
+```java
+CircuitBreakerConfig.custom()
+    .waitDurationInOpenState(Duration.ofSeconds(60))
+    
+    // Trade-off:
+    // - Too short (10s) → May open again too quickly
+    // - Too long (300s) → Slow recovery
+    // - Recommended: 30-60 seconds
+```
+
+#### Multi-Level Circuit Breakers
+
+**Service-Level Breaker:**
+```java
+@Bean
+public CircuitBreaker serviceLevelBreaker() {
+    return CircuitBreaker.of("payment-service", 
+        CircuitBreakerConfig.custom()
+            .failureRateThreshold(30)
+            .build());
+}
+```
+
+**Method-Level Breaker:**
+```java
+@Service
+public class PaymentService {
+    private final CircuitBreaker chargeBreaker;
+    private final CircuitBreaker refundBreaker;
+    
+    public PaymentResult charge(PaymentRequest request) {
+        Supplier<PaymentResult> decorated = CircuitBreaker.decorateSupplier(
+            chargeBreaker, () -> gateway.charge(request));
+        return decorated.get();
+    }
+    
+    public PaymentResult refund(RefundRequest request) {
+        Supplier<PaymentResult> decorated = CircuitBreaker.decorateSupplier(
+            refundBreaker, () -> gateway.refund(request));
+        return decorated.get();
+    }
+}
+```
+
+**Dependency-Level Breaker:**
+```java
+// Different breakers for different dependencies
+@Bean
+public CircuitBreaker paymentGatewayBreaker() {
+    return CircuitBreaker.of("payment-gateway", ...);
+}
+
+@Bean
+public CircuitBreaker emailServiceBreaker() {
+    return CircuitBreaker.of("email-service", ...);
+}
+
+// Use appropriate breaker per dependency
+```
+
+### 8.11.3. Deployment Strategies Examples
+
+#### Blue-Green with Kubernetes
+
+**Service + 2 Deployments (Blue, Green):**
+```yaml
+# Service (routes to active deployment)
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-service
+spec:
+  selector:
+    app: api
+    version: blue  # Switch between blue/green
+  ports:
+    - port: 80
+      targetPort: 8080
+
+---
+# Blue Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-blue
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: api
+      version: blue
+  template:
+    metadata:
+      labels:
+        app: api
+        version: blue
+    spec:
+      containers:
+      - name: api
+        image: api:v1.0
+        ports:
+        - containerPort: 8080
+
+---
+# Green Deployment (new version)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-green
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: api
+      version: green
+  template:
+    metadata:
+      labels:
+        app: api
+        version: green
+    spec:
+      containers:
+      - name: api
+        image: api:v2.0  # New version
+        ports:
+        - containerPort: 8080
+```
+
+**Service Selector Switching:**
+```bash
+# Switch to green (deploy new version)
+kubectl patch service api-service -p '{"spec":{"selector":{"version":"green"}}}'
+
+# Verify traffic switched
+kubectl get endpoints api-service
+
+# Rollback to blue (if issues)
+kubectl patch service api-service -p '{"spec":{"selector":{"version":"blue"}}}'
+```
+
+**Rolling Back Procedure:**
+```bash
+# 1. Monitor green deployment
+kubectl logs -f deployment/api-green
+
+# 2. Check metrics
+kubectl top pods -l version=green
+
+# 3. If issues detected → Rollback
+kubectl patch service api-service -p '{"spec":{"selector":{"version":"blue"}}}'
+
+# 4. Keep green running for analysis (optional)
+# Delete green deployment after analysis
+kubectl delete deployment api-green
+```
+
+#### Canary with Istio
+
+**VirtualService Weight Configuration:**
+```yaml
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: api-service
+spec:
+  hosts:
+    - api-service
+  http:
+    - match:
+        - headers:
+            canary:
+              exact: "true"
+      route:
+        - destination:
+            host: api-service
+            subset: v2
+          weight: 100
+    - route:
+        - destination:
+            host: api-service
+            subset: v1
+          weight: 90
+        - destination:
+            host: api-service
+            subset: v2
+          weight: 10  # 10% traffic to canary
+```
+
+**Progressive Canary Rollout:**
+```bash
+# Step 1: Deploy canary (5% traffic)
+istioctl set-route api-service v1=95,v2=5
+
+# Step 2: Monitor metrics
+# - Error rate < 1%
+# - Latency p99 < 200ms
+# - No critical alerts
+
+# Step 3: Increase to 25%
+istioctl set-route api-service v1=75,v2=25
+
+# Step 4: Increase to 50%
+istioctl set-route api-service v1=50,v2=50
+
+# Step 5: Full rollout (100%)
+istioctl set-route api-service v1=0,v2=100
+```
+
+**Traffic Mirroring (Shadow Traffic):**
+```yaml
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: api-service
+spec:
+  hosts:
+    - api-service
+  http:
+    - route:
+        - destination:
+            host: api-service
+            subset: v1
+          weight: 100
+      mirror:
+        host: api-service
+        subset: v2  # Mirror traffic to v2 (canary)
+      mirrorPercentage:
+        value: 100  # Mirror 100% of traffic
+```
+
+**Progressive Delivery Automation (Flagger):**
+```yaml
+apiVersion: flagger.app/v1beta1
+kind: Canary
+metadata:
+  name: api-service
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api-service
+  service:
+    port: 80
+  canaryAnalysis:
+    interval: 30s
+    threshold: 5
+    maxWeight: 50
+    stepWeight: 10
+    metrics:
+      - name: error-rate
+        threshold: 1
+      - name: latency-p99
+        threshold: 200
+```
+
+#### Database Migration Strategies
+
+**Backward Compatible Schema Changes:**
+```sql
+-- Phase 1: Add new column (nullable)
+ALTER TABLE users ADD COLUMN email_v2 VARCHAR(255) NULL;
+
+-- Phase 2: Migrate data (background job)
+UPDATE users SET email_v2 = email WHERE email_v2 IS NULL;
+
+-- Phase 3: Verify migration
+SELECT COUNT(*) FROM users WHERE email_v2 IS NULL;
+-- Should be 0
+
+-- Phase 4: Update application code to use email_v2
+
+-- Phase 5: Make column NOT NULL (after all apps updated)
+ALTER TABLE users MODIFY COLUMN email_v2 VARCHAR(255) NOT NULL;
+
+-- Phase 6: Remove old column (optional)
+ALTER TABLE users DROP COLUMN email;
+```
+
+**Multi-Phase Migration:**
+```sql
+-- Example: Rename column
+-- Step 1: Add new column
+ALTER TABLE users ADD COLUMN new_name VARCHAR(255) NULL;
+
+-- Step 2: Migrate data
+UPDATE users SET new_name = old_name;
+
+-- Step 3: Deploy app using new_name
+
+-- Step 4: Drop old column (after all apps updated)
+ALTER TABLE users DROP COLUMN old_name;
+
+-- Step 5: Rename new_name to final name (optional)
+ALTER TABLE users CHANGE COLUMN new_name name VARCHAR(255);
+```
+
+**Zero-Downtime Migration Patterns:**
+```
+1. Dual-Write Pattern
+   - Write to both old and new tables
+   - Read from old table
+   - Migrate data in background
+   - Switch reads to new table
+   - Remove old table
+
+2. Expand-Contract Pattern
+   - Add new schema (backward compatible)
+   - Deploy app with new schema
+   - Migrate data
+   - Remove old schema
+
+3. Blue-Green Schema
+   - Create new schema (blue)
+   - Switch app to blue
+   - Keep green for rollback
+   - Remove green after validation
+```
+
+### 8.11.4. Chaos Engineering
+
+#### Chaos Monkey (Netflix)
+
+**Random Instance Termination:**
+```java
+// Chaos Monkey randomly terminates instances
+// - Ensures system can handle instance failures
+// - Validates auto-scaling works
+// - Tests failover mechanisms
+
+// Configuration
+chaos.monkey.enabled=true
+chaos.monkey.assaults.level=5  // 5 attacks per hour
+chaos.monkey.assaults.latencyRangeStart=1000  // 1s latency
+chaos.monkey.assaults.latencyRangeEnd=3000  // 3s latency
+```
+
+**Latency Injection:**
+```java
+@Component
+public class LatencyChaos {
+    @Scheduled(fixedRate = 60000)  // Every minute
+    public void injectLatency() {
+        if (Math.random() < 0.1) {  // 10% chance
+            // Add 1-3s latency
+            int latency = 1000 + (int)(Math.random() * 2000);
+            Thread.sleep(latency);
+        }
+    }
+}
+```
+
+**Error Injection:**
+```java
+@Component
+public class ErrorChaos {
+    @Scheduled(fixedRate = 60000)
+    public void injectError() {
+        if (Math.random() < 0.05) {  // 5% chance
+            throw new RuntimeException("Chaos: Random error");
+        }
+    }
+}
+```
+
+#### Chaos Testing Scenarios
+
+**1. Kill Random Pod (Kubernetes):**
+```bash
+# Kill random pod
+kubectl delete pod $(kubectl get pods -l app=api -o jsonpath='{.items[rand(@.items)].metadata.name}')
+
+# Verify:
+# - New pod starts automatically
+# - Traffic routes to other pods
+# - No user impact
+```
+
+**2. Network Partition Simulation:**
+```bash
+# Isolate pod from network
+kubectl exec -it <pod-name> -- iptables -A INPUT -j DROP
+
+# Verify:
+# - Health checks fail
+# - Traffic routes to healthy pods
+# - Pod restarts/reconnects
+```
+
+**3. Disk Fill Simulation:**
+```bash
+# Fill disk
+kubectl exec -it <pod-name> -- dd if=/dev/zero of=/tmp/fill bs=1M count=1000
+
+# Verify:
+# - Disk monitoring alerts
+# - Cleanup jobs run
+# - Pod doesn't crash (handles gracefully)
+```
+
+**4. Clock Skew Injection:**
+```java
+// Simulate clock skew (for testing time-dependent logic)
+public class ClockSkewChaos {
+    public long getCurrentTime() {
+        long skew = (long)(Math.random() * 5000) - 2500;  // ±2.5s
+        return System.currentTimeMillis() + skew;
+    }
+}
+```
+
+#### Resilience Validation
+
+**Recovery Time Measurement:**
+```java
+@Test
+public void testRecoveryTime() {
+    // 1. Inject failure
+    chaosMonkey.killInstance("api-service-1");
+    
+    // 2. Measure recovery time
+    long startTime = System.currentTimeMillis();
+    waitForHealthy();
+    long recoveryTime = System.currentTimeMillis() - startTime;
+    
+    // 3. Validate recovery time < SLA
+    assertTrue(recoveryTime < 60000, "Recovery time should be < 60s");
+}
+```
+
+**Data Consistency Check:**
+```java
+@Test
+public void testDataConsistency() {
+    // 1. Create test data
+    createTestData();
+    
+    // 2. Inject failure
+    chaosMonkey.killInstance("database-replica");
+    
+    // 3. Verify data consistency
+    assertDataConsistency();
+    // - No data loss
+    // - No duplicate records
+    // - Referential integrity maintained
+}
+```
+
+**User Impact Assessment:**
+```java
+// Monitor during chaos experiments
+- Error rate (should not spike)
+- Response time (should remain acceptable)
+- User session (should not disconnect)
+- Data integrity (no data loss)
+```
+
+### 8.11.5. Observability Stack
+
+#### Metrics (Prometheus)
+
+**Custom Metrics Definition:**
+```java
+@Component
+public class CustomMetrics {
+    private final Counter requestCounter;
+    private final Timer requestTimer;
+    private final Gauge activeUsers;
+    
+    public CustomMetrics(MeterRegistry registry) {
+        this.requestCounter = Counter.builder("api.requests")
+            .tag("status", "success")
+            .description("Total API requests")
+            .register(registry);
+        
+        this.requestTimer = Timer.builder("api.duration")
+            .description("API request duration")
+            .register(registry);
+        
+        this.activeUsers = Gauge.builder("api.active_users")
+            .description("Active users count")
+            .register(registry, this, CustomMetrics::getActiveUsers);
+    }
+    
+    public void recordRequest(String status) {
+        requestCounter.increment("status", status);
+    }
+    
+    public void recordDuration(Duration duration) {
+        requestTimer.record(duration);
+    }
+    
+    private double getActiveUsers() {
+        return userService.getActiveUserCount();
+    }
+}
+```
+
+**Alerting Rules:**
+```yaml
+# prometheus-alerts.yml
+groups:
+  - name: api-alerts
+    rules:
+      - alert: HighErrorRate
+        expr: rate(api_requests{status="error"}[5m]) > 0.1
+        for: 5m
+        annotations:
+          summary: "High error rate detected"
+          
+      - alert: HighLatency
+        expr: histogram_quantile(0.99, api_duration_bucket) > 1000
+        for: 5m
+        annotations:
+          summary: "P99 latency > 1s"
+          
+      - alert: ServiceDown
+        expr: up{job="api-service"} == 0
+        for: 1m
+        annotations:
+          summary: "Service is down"
+```
+
+**Grafana Dashboard Templates:**
+```json
+{
+  "dashboard": {
+    "title": "API Service Dashboard",
+    "panels": [
+      {
+        "title": "Request Rate",
+        "targets": [
+          {
+            "expr": "rate(api_requests_total[5m])"
+          }
+        ]
+      },
+      {
+        "title": "Error Rate",
+        "targets": [
+          {
+            "expr": "rate(api_requests{status=\"error\"}[5m])"
+          }
+        ]
+      },
+      {
+        "title": "P99 Latency",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.99, api_duration_bucket)"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+#### Logging (ELK)
+
+**Structured Logging (JSON):**
+```java
+@Service
+public class OrderService {
+    private static final Logger log = LoggerFactory.getLogger(OrderService.class);
+    
+    public void createOrder(Order order) {
+        // Structured logging
+        log.info("order.created", 
+            kv("orderId", order.getId()),
+            kv("userId", order.getUserId()),
+            kv("amount", order.getAmount()),
+            kv("timestamp", Instant.now())
+        );
+    }
+    
+    // JSON output:
+    // {
+    //   "level": "INFO",
+    //   "message": "order.created",
+    //   "orderId": "12345",
+    //   "userId": "67890",
+    //   "amount": 100.00,
+    //   "timestamp": "2024-01-01T12:00:00Z"
+    // }
+}
+```
+
+**Log Aggregation Patterns:**
+```yaml
+# logback-spring.xml
+<configuration>
+    <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <includeMdc>true</includeMdc>
+            <includeContext>true</includeContext>
+        </encoder>
+    </appender>
+    
+    <root level="INFO">
+        <appender-ref ref="JSON" />
+    </root>
+</configuration>
+```
+
+**Kibana Query Examples:**
+```json
+// Find error logs
+{
+  "query": {
+    "match": {
+      "level": "ERROR"
+    }
+  }
+}
+
+// Find logs by order ID
+{
+  "query": {
+    "match": {
+      "orderId": "12345"
+    }
+  }
+}
+
+// Find high-latency requests (from duration field)
+{
+  "query": {
+    "range": {
+      "duration": {
+        "gte": 1000
+      }
+    }
+  }
+}
+```
+
+#### Tracing (Jaeger)
+
+**Distributed Tracing Setup:**
+```java
+@Configuration
+public class TracingConfig {
+    @Bean
+    public Tracer tracer() {
+        return new Configuration("api-service")
+            .withSampler(SamplerConfiguration.fromEnv()
+                .withType(ConstSampler.TYPE)
+                .withParam(1))  // Sample 100%
+            .withReporter(ReporterConfiguration.fromEnv()
+                .withLogSpans(true)
+                .withSender(SenderConfiguration.fromEnv()
+                    .withEndpoint("http://jaeger:14268/api/traces")))
+            .getTracer();
+    }
+}
+```
+
+**Trace Context Propagation:**
+```java
+@RestController
+public class ApiController {
+    @Autowired
+    private Tracer tracer;
+    
+    @GetMapping("/api/orders")
+    public ResponseEntity<?> getOrders(HttpServletRequest request) {
+        // Start span
+        Span span = tracer.buildSpan("getOrders")
+            .withTag("http.method", "GET")
+            .withTag("http.url", request.getRequestURI())
+            .start();
+        
+        try (Scope scope = tracer.scopeManager().activate(span)) {
+            // Call downstream service (trace context propagated automatically)
+            return orderService.getOrders();
+        } finally {
+            span.finish();
+        }
+    }
+}
+```
+
+**Performance Bottleneck Identification:**
+```java
+// Jaeger UI shows:
+// - Service map (which services call which)
+// - Trace timeline (how long each operation takes)
+// - Bottleneck identification (slowest operations highlighted)
+
+// Example trace:
+// API Gateway (10ms)
+//   → Order Service (50ms)
+//      → Database Query (40ms) ← Bottleneck!
+//   → Payment Service (30ms)
+//      → Payment Gateway (25ms) ← Bottleneck!
+```
+
+---
+
 ## Tổng kết Phần 8: High Availability
 
 Đã hoàn thành **Phần 8: High Availability** với các kiến thức thiết yếu:

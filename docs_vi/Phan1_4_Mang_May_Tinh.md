@@ -448,4 +448,605 @@ Nếu HTTP/1.1 với `Connection: keep-alive`, kết nối có thể được gi
 
 ---
 
+## 7. Advanced Network Solutions
+
+### 7.1. Network Protocols Chi tiết
+
+#### TCP Connection Management
+
+**TCP Three-Way Handshake:**
+```
+Client                          Server
+  |                                |
+  |-------- SYN (seq=x) ---------->|
+  |<------ SYN-ACK (seq=y, ack=x+1)|
+  |------ ACK (ack=y+1) ---------->|
+  |                                |
+  |    Connection Established      |
+```
+
+**Code Example (Conceptual):**
+```c
+// Client side
+int connect_tcp(char *host, int port) {
+    // Step 1: Send SYN
+    send_syn(seq = random());
+    
+    // Step 2: Wait for SYN-ACK
+    syn_ack = recv_syn_ack();
+    if (syn_ack.ack != seq + 1) {
+        return ERROR;
+    }
+    
+    // Step 3: Send ACK
+    send_ack(ack = syn_ack.seq + 1);
+    
+    // Connection established
+    return SUCCESS;
+}
+```
+
+**TCP Four-Way Handshake (Connection Close):**
+```
+Client                          Server
+  |                                |
+  |-------- FIN (seq=x) ---------->|
+  |<------ ACK (ack=x+1) ----------|
+  |                                |
+  |<------ FIN (seq=y) ------------|
+  |------ ACK (ack=y+1) ---------->|
+  |                                |
+  |    Connection Closed           |
+```
+
+**TCP States:**
+```
+CLOSED → LISTEN → SYN_RCVD → ESTABLISHED → FIN_WAIT_1 → FIN_WAIT_2 → TIME_WAIT → CLOSED
+```
+
+**TIME_WAIT State:**
+- Duration: 2 × MSL (Maximum Segment Lifetime), typically 30-120 seconds
+- Purpose: Ensure all packets are flushed from network
+- Problem: Port cannot be reused immediately
+- Solution: `SO_REUSEADDR` socket option
+
+#### TCP Flow Control
+
+**Concept:** Receiver controls sender's transmission rate to prevent buffer overflow.
+
+**Sliding Window:**
+```
+Sender                          Receiver
+  |                                |
+  | [1][2][3][4][5][6][7][8]       |
+  |  ^window (size=4)               |
+  |  send 1-4                       |
+  |------------------------------->|
+  |                                | [1][2][3][4]
+  |                                | ack=5, window=4
+  |<-------------------------------|
+  |                                |
+  |  slide window, send 5-8        |
+  |------------------------------->|
+```
+
+**Window Size Calculation:**
+```
+Advertised Window = Receive Buffer Size - Received Data
+```
+
+**Zero Window:**
+- If receiver buffer full → advertise window = 0
+- Sender stops sending until window > 0
+- Sender probes periodically (keepalive)
+
+#### TCP Congestion Control
+
+**Algorithms:**
+
+**1. Slow Start**
+```
+cwnd = 1 segment
+cwnd = cwnd × 2 (double every RTT)
+until cwnd >= ssthresh
+```
+
+**2. Congestion Avoidance**
+```
+cwnd = cwnd + 1 (increase by 1 segment per RTT)
+```
+
+**3. Fast Retransmit**
+```
+If receive 3 duplicate ACKs → retransmit immediately (don't wait for timeout)
+```
+
+**4. Fast Recovery**
+```
+After fast retransmit:
+ssthresh = cwnd / 2
+cwnd = ssthresh + 3
+```
+
+**TCP Congestion Control States:**
+```
+Slow Start → Congestion Avoidance → Fast Retransmit → Fast Recovery
+    ↑                                                  ↓
+    └──────────────────────────────────────────────────┘
+```
+
+#### HTTP/2 and HTTP/3
+
+**HTTP/2 Features:**
+- **Multiplexing**: Multiple requests over single connection
+- **Header Compression**: HPACK compression
+- **Server Push**: Server can push resources proactively
+- **Binary Protocol**: More efficient than HTTP/1.1 text-based
+
+**HTTP/3 Features:**
+- **QUIC Protocol**: Based on UDP, not TCP
+- **Built-in Encryption**: TLS 1.3 required
+- **Connection Migration**: Handover between networks
+- **Reduced Latency**: Faster handshake than TCP
+
+#### DNS Resolution Chi tiết
+
+**DNS Hierarchy:**
+```
+. (root)
+├── com, org, net, ...
+│   ├── example.com
+│   │   ├── www.example.com
+│   │   ├── mail.example.com
+│   │   └── api.example.com
+```
+
+**DNS Query Process:**
+```
+Client → Local DNS Server → Root DNS Server → TLD DNS Server → Authoritative DNS Server
+```
+
+**DNS Record Types:**
+- **A**: IPv4 address
+- **AAAA**: IPv6 address
+- **CNAME**: Canonical name (alias)
+- **MX**: Mail exchange
+- **NS**: Name server
+- **TXT**: Text record (verification, SPF, DKIM)
+
+**DNS Caching:**
+```
+TTL (Time To Live) determines cache duration
+- Lower TTL → More queries (but faster updates)
+- Higher TTL → Fewer queries (but slower updates)
+- Recommended: 300-3600 seconds
+```
+
+**DNS Troubleshooting:**
+```bash
+# Query DNS records
+dig example.com
+dig example.com MX
+nslookup example.com
+
+# Check DNS propagation
+dig @8.8.8.8 example.com  # Google DNS
+dig @1.1.1.1 example.com  # Cloudflare DNS
+
+# Trace DNS resolution
+dig +trace example.com
+```
+
+### 7.2. Troubleshooting Common Issues
+
+#### Issue 1: Connection Timeout
+
+**Symptom:** Client cannot connect to server.
+
+**Troubleshooting Steps:**
+```bash
+# 1. Check if server is running
+ps aux | grep server_process
+
+# 2. Check if port is listening
+netstat -tulpn | grep :8080
+ss -tulpn | grep :8080
+
+# 3. Test connectivity
+telnet server_ip 8080
+nc -zv server_ip 8080
+
+# 4. Check firewall rules
+iptables -L -n
+firewall-cmd --list-all
+
+# 5. Check DNS resolution
+nslookup server_hostname
+dig server_hostname
+
+# 6. Trace network path
+traceroute server_ip
+mtr server_ip  # (my traceroute)
+```
+
+**Common Causes:**
+- ❌ Server not running
+- ❌ Port not listening
+- ❌ Firewall blocking
+- ❌ Network unreachable
+- ❌ DNS resolution failed
+
+**Solutions:**
+```bash
+# Start server
+systemctl start service_name
+
+# Open firewall port
+firewall-cmd --add-port=8080/tcp --permanent
+firewall-cmd --reload
+
+# Check routing
+ip route show
+route -n
+```
+
+#### Issue 2: Slow Network Performance
+
+**Symptom:** High latency, low throughput.
+
+**Troubleshooting Steps:**
+```bash
+# 1. Check bandwidth
+speedtest-cli
+iperf3 -c server_ip  # (requires iperf3 on both ends)
+
+# 2. Check latency
+ping server_ip
+ping -c 10 server_ip  # 10 packets
+ping -i 0.1 server_ip  # 100ms interval
+
+# 3. Check packet loss
+ping -c 100 server_ip | grep packet
+
+# 4. Monitor network traffic
+iftop  # Real-time bandwidth monitor
+nload  # Real-time traffic monitor
+vnstat  # Network statistics
+
+# 5. Check network errors
+ifconfig | grep -i error
+ethtool -S eth0 | grep -i error
+
+# 6. Check TCP connections
+ss -s  # Socket statistics
+netstat -s | grep -i "segments retransmitted"
+```
+
+**Common Causes:**
+- ❌ Network congestion
+- ❌ High latency (distance)
+- ❌ Packet loss
+- ❌ Network errors (dropped packets)
+- ❌ Bandwidth limitation
+- ❌ TCP retransmission
+
+**Solutions:**
+```bash
+# Increase TCP buffer size
+sysctl -w net.core.rmem_max=16777216
+sysctl -w net.core.wmem_max=16777216
+
+# Enable TCP window scaling
+sysctl -w net.ipv4.tcp_window_scaling=1
+
+# Optimize TCP congestion control
+sysctl -w net.ipv4.tcp_congestion_control=bbr  # BBR algorithm
+```
+
+#### Issue 3: DNS Resolution Failed
+
+**Symptom:** Cannot resolve domain names.
+
+**Troubleshooting Steps:**
+```bash
+# 1. Test DNS resolution
+nslookup example.com
+dig example.com
+host example.com
+
+# 2. Check DNS server configuration
+cat /etc/resolv.conf
+systemd-resolve --status
+
+# 3. Test specific DNS server
+dig @8.8.8.8 example.com
+dig @1.1.1.1 example.com
+
+# 4. Check DNS cache
+systemd-resolve --flush-caches
+
+# 5. Check DNS server status
+systemctl status systemd-resolved
+```
+
+**Common Causes:**
+- ❌ DNS server unreachable
+- ❌ Incorrect DNS configuration
+- ❌ DNS cache poisoning
+- ❌ Firewall blocking DNS (port 53)
+
+**Solutions:**
+```bash
+# Update DNS servers
+echo "nameserver 8.8.8.8" > /etc/resolv.conf
+echo "nameserver 1.1.1.1" >> /etc/resolv.conf
+
+# Flush DNS cache
+systemd-resolve --flush-caches
+# Or
+resolvectl flush-caches
+```
+
+#### Issue 4: Connection Reset
+
+**Symptom:** Connection reset by peer.
+
+**Troubleshooting Steps:**
+```bash
+# 1. Check server logs
+tail -f /var/log/server.log
+
+# 2. Check connection state
+ss -tan | grep :8080 | grep ESTAB
+
+# 3. Check firewall rules
+iptables -L -n -v
+
+# 4. Check TCP keepalive
+ss -o state established '( dport = :8080 )'
+
+# 5. Capture network packets
+tcpdump -i eth0 -n 'tcp port 8080'
+```
+
+**Common Causes:**
+- ❌ Server crash/restart
+- ❌ Firewall resetting connection
+- ❌ Application closing connection
+- ❌ TCP keepalive timeout
+
+**Solutions:**
+```bash
+# Increase TCP keepalive time
+sysctl -w net.ipv4.tcp_keepalive_time=600
+sysctl -w net.ipv4.tcp_keepalive_intvl=60
+sysctl -w net.ipv4.tcp_keepalive_probes=3
+
+# Check application connection handling
+# Ensure proper connection closure
+```
+
+### 7.3. Performance Optimization
+
+#### TCP Tuning
+
+**Kernel Parameters:**
+```bash
+# TCP buffer sizes
+net.core.rmem_max = 16777216      # Receive buffer max (16MB)
+net.core.wmem_max = 16777216      # Send buffer max (16MB)
+net.ipv4.tcp_rmem = 4096 87380 16777216  # Min, default, max receive
+net.ipv4.tcp_wmem = 4096 65536 16777216  # Min, default, max send
+
+# TCP window scaling
+net.ipv4.tcp_window_scaling = 1   # Enable window scaling
+
+# TCP congestion control
+net.ipv4.tcp_congestion_control = bbr  # Use BBR algorithm
+
+# TCP keepalive
+net.ipv4.tcp_keepalive_time = 600  # Keepalive time (10 minutes)
+net.ipv4.tcp_keepalive_intvl = 60  # Keepalive interval (1 minute)
+net.ipv4.tcp_keepalive_probes = 3  # Keepalive probes
+
+# TCP connection backlog
+net.core.somaxconn = 4096          # Accept queue size
+
+# TCP fast open
+net.ipv4.tcp_fastopen = 3          # Enable TCP fast open
+```
+
+**Apply Settings:**
+```bash
+# Temporary (until reboot)
+sysctl -w net.core.rmem_max=16777216
+
+# Permanent (add to /etc/sysctl.conf)
+echo "net.core.rmem_max = 16777216" >> /etc/sysctl.conf
+sysctl -p  # Apply changes
+```
+
+#### HTTP/1.1 Optimization
+
+**1. Connection Keep-Alive**
+```http
+Connection: keep-alive
+Keep-Alive: timeout=60, max=100
+```
+- Reuse TCP connection for multiple requests
+- Reduces connection establishment overhead
+
+**2. HTTP Pipelining**
+```
+Client: Request 1 → Request 2 → Request 3
+Server: Response 1 ← Response 2 ← Response 3
+```
+- Send multiple requests without waiting for responses
+- Problem: Head-of-line blocking
+
+**3. Compression**
+```http
+Accept-Encoding: gzip, deflate, br
+Content-Encoding: gzip
+```
+- Compress response body
+- Reduces bandwidth usage
+
+**4. Caching**
+```http
+Cache-Control: max-age=3600
+ETag: "abc123"
+If-None-Match: "abc123"
+```
+- Cache responses on client
+- Reduces server load
+
+#### HTTP/2 Optimization
+
+**1. Server Push**
+```http
+Link: </style.css>; rel=preload; as=style
+```
+- Server proactively pushes resources
+- Reduces latency
+
+**2. Header Compression**
+- HPACK compression
+- Reduces header overhead
+
+**3. Multiplexing**
+- Multiple requests over single connection
+- Eliminates head-of-line blocking
+
+#### Load Balancing Strategies
+
+**1. Round Robin**
+```
+Request 1 → Server 1
+Request 2 → Server 2
+Request 3 → Server 3
+Request 4 → Server 1 (cycle)
+```
+
+**2. Least Connections**
+```
+Route to server with fewest active connections
+```
+
+**3. IP Hash (Session Affinity)**
+```
+hash(client_ip) % server_count → Server index
+```
+
+**4. Weighted Round Robin**
+```
+Server 1 (weight=3) → 3 requests
+Server 2 (weight=1) → 1 request
+Server 3 (weight=2) → 2 requests
+```
+
+**Nginx Load Balancing Example:**
+```nginx
+upstream backend {
+    least_conn;  # Least connections strategy
+    server backend1:8080 weight=3;
+    server backend2:8080 weight=1;
+    server backend3:8080 weight=2;
+    
+    # Health check
+    health_check interval=10s fails=3 passes=2;
+}
+
+server {
+    listen 80;
+    location / {
+        proxy_pass http://backend;
+    }
+}
+```
+
+#### CDN (Content Delivery Network)
+
+**Concept:** Distribute content to edge servers close to users.
+
+**Benefits:**
+- ✅ Reduced latency (closer to users)
+- ✅ Reduced bandwidth (cached content)
+- ✅ Improved availability (multiple servers)
+- ✅ DDoS protection
+
+**CDN Flow:**
+```
+User → Edge Server (cache hit) → User
+User → Edge Server (cache miss) → Origin Server → Edge Server (cache) → User
+```
+
+**CDN Providers:**
+- CloudFlare
+- Amazon CloudFront
+- Fastly
+- Akamai
+
+#### Network Monitoring Tools
+
+**1. Packet Capture (tcpdump, Wireshark)**
+```bash
+# Capture packets
+tcpdump -i eth0 -n 'tcp port 80'
+
+# Save to file
+tcpdump -i eth0 -w capture.pcap
+
+# Analyze with Wireshark
+wireshark capture.pcap
+```
+
+**2. Network Statistics (ss, netstat)**
+```bash
+# Socket statistics
+ss -s
+
+# Established connections
+ss -tan state established
+
+# Listen ports
+ss -tulpn
+```
+
+**3. Bandwidth Monitoring (iftop, nload)**
+```bash
+# Real-time bandwidth
+iftop -i eth0
+
+# Network load
+nload eth0
+```
+
+**4. Latency Testing (ping, traceroute)**
+```bash
+# ICMP ping
+ping -c 10 server_ip
+
+# TCP ping (if ICMP blocked)
+nc -zv -w 5 server_ip 80
+
+# Trace route
+traceroute server_ip
+mtr server_ip
+```
+
+**5. DNS Testing (dig, nslookup)**
+```bash
+# DNS query
+dig example.com
+
+# Trace DNS resolution
+dig +trace example.com
+
+# Query specific DNS server
+dig @8.8.8.8 example.com
+```
+
+---
+
 *Kết thúc Phần 1.4: Mạng Máy tính*

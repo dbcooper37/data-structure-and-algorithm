@@ -1190,6 +1190,1135 @@ Tham số tùy chọn:
 (integer) 0
 ```
 
+## 9. Bổ sung: Giải pháp & Cách xử lý nâng cao
+
+### 9.1. Dynamic Array (ArrayList) - Resize theo cấp số nhân
+
+**Vấn đề:** Mảng cố định kích thước, cần mở rộng khi vượt capacity.
+
+**Giải pháp:** Nhân đôi capacity để giảm số lần copy (amortized O(1)).
+
+**Cách xử lý:**
+1. Khi `size == capacity` → cấp phát mảng mới `capacity * 2`.
+2. Copy dữ liệu cũ sang mảng mới.
+3. Thêm phần tử mới.
+
+**Code Java:**
+```java
+public class DynamicIntArray {
+    private int[] data;
+    private int size;
+
+    public DynamicIntArray(int initialCapacity) {
+        this.data = new int[initialCapacity];
+        this.size = 0;
+    }
+
+    public void add(int value) {
+        if (size == data.length) {
+            // Resize theo cấp số nhân để giảm số lần copy
+            int[] newData = new int[data.length * 2];
+            System.arraycopy(data, 0, newData, 0, data.length);
+            data = newData;
+        }
+        data[size++] = value;
+    }
+
+    public int get(int index) {
+        if (index < 0 || index >= size) {
+            throw new IndexOutOfBoundsException("Index out of range");
+        }
+        return data[index];
+    }
+}
+```
+
+**Trade-offs:**
+- ✅ Truy cập O(1), append amortized O(1)
+- ❌ Resize đột ngột tốn O(n)
+
+### 9.2. Circular Buffer (Ring Buffer) cho Producer/Consumer
+
+**Use case:** Message queue, log buffer, streaming data.
+
+```mermaid
+graph LR
+    H((head)) --> N1[0] --> N2[1] --> N3[2] --> N4[3] --> T((tail))
+    T --> H
+```
+
+**Code Java:**
+```java
+public class RingBuffer {
+    private final int[] buffer;
+    private int head = 0;
+    private int tail = 0;
+    private int size = 0;
+
+    public RingBuffer(int capacity) {
+        this.buffer = new int[capacity];
+    }
+
+    public boolean offer(int value) {
+        if (size == buffer.length) {
+            return false; // Buffer đầy
+        }
+        buffer[tail] = value;
+        tail = (tail + 1) % buffer.length;
+        size++;
+        return true;
+    }
+
+    public Integer poll() {
+        if (size == 0) {
+            return null; // Buffer rỗng
+        }
+        int value = buffer[head];
+        head = (head + 1) % buffer.length;
+        size--;
+        return value;
+    }
+}
+```
+
+**Best practices:**
+- Dùng ring buffer cho dữ liệu streaming để tránh cấp phát liên tục.
+- Dùng phiên bản lock-free (Disruptor) khi throughput cực cao.
+
+### 9.3. Skip List - Khi cần thứ tự + hiệu năng cân bằng
+
+**Ý tưởng:** Nhiều tầng liên kết giúp tìm kiếm gần như O(log n) mà không cần cân bằng phức tạp.
+
+**Ưu điểm / Nhược điểm:**
+- ✅ Đơn giản hơn cây cân bằng, hỗ trợ range query
+- ✅ Được dùng trong Redis Sorted Set
+- ❌ Tốn thêm bộ nhớ cho pointers
+
+**Khi nào dùng:**
+- Cần cấu trúc có thứ tự và thao tác insert/delete thường xuyên.
+
+### 9.4. Trie cho Autocomplete và Prefix Search
+
+**Use case:** Gợi ý tìm kiếm, dictionary, spell check.
+
+**Code Java (Insert + Search prefix):**
+```java
+class TrieNode {
+    TrieNode[] children = new TrieNode[26];
+    boolean isWord;
+}
+
+class Trie {
+    private final TrieNode root = new TrieNode();
+
+    public void insert(String word) {
+        TrieNode node = root;
+        for (char c : word.toCharArray()) {
+            int idx = c - 'a';
+            if (node.children[idx] == null) {
+                node.children[idx] = new TrieNode();
+            }
+            node = node.children[idx];
+        }
+        node.isWord = true;
+    }
+
+    public boolean startsWith(String prefix) {
+        TrieNode node = root;
+        for (char c : prefix.toCharArray()) {
+            int idx = c - 'a';
+            if (node.children[idx] == null) {
+                return false;
+            }
+            node = node.children[idx];
+        }
+        return true;
+    }
+}
+```
+
+**Pitfalls:**
+- Bộ nhớ tăng nhanh nếu dùng full Unicode → cân nhắc nén (radix tree).
+
+### 9.5. B-Tree vs B+ Tree (Database Index)
+
+| Tiêu chí | B-Tree | B+ Tree |
+| --- | --- | --- |
+| Lưu dữ liệu | Node nội + lá | Chỉ lá |
+| Lưu trữ data payload | Có thể ở node nội | Chỉ ở lá |
+| Range query | Khó tối ưu | Rất tốt |
+| Disk I/O | Nhiều hơn | Ít hơn |
+| Use case | File system | DB index |
+
+**Kết luận:** Hầu hết DB dùng B+ Tree vì tối ưu range scan và caching.
+
+### 9.6. Array vs LinkedList: Memory Layout và Cache Efficiency
+
+**Vấn đề:** Tại sao Array nhanh hơn LinkedList trong hầu hết trường hợp?
+
+**Giải thích:**
+
+1. **Memory Layout:**
+   - **Array**: Bộ nhớ liên tục (contiguous memory)
+   - **LinkedList**: Bộ nhớ rời rạc (scattered memory), mỗi node ở địa chỉ khác nhau
+
+2. **Cache Efficiency:**
+   - CPU cache hoạt động theo **cache lines** (thường 64 bytes)
+   - Khi đọc 1 phần tử array → CPU load cả cache line (64 bytes) → các phần tử kế tiếp có sẵn trong cache
+   - Với LinkedList → mỗi node ở địa chỉ khác → **cache miss** thường xuyên → phải đọc từ RAM (chậm hơn 100x)
+
+**Benchmark:**
+```java
+// Array: ~10ms cho 100M truy cập
+int[] arr = new int[100_000_000];
+for (int i = 0; i < arr.length; i++) {
+    arr[i] = i;
+}
+
+// LinkedList: ~5000ms cho 100M truy cập (chậm hơn 500x!)
+LinkedList<Integer> list = new LinkedList<>();
+for (int i = 0; i < 100_000_000; i++) {
+    list.add(i);
+}
+```
+
+**Trade-offs:**
+- ✅ **Array**: Cache-friendly, random access O(1), nhưng resize tốn kém
+- ✅ **LinkedList**: Insert/delete O(1), nhưng truy cập tuần tự chậm do cache miss
+
+**Khi nào dùng:**
+- Array: Khi cần truy cập ngẫu nhiên, size cố định hoặc thay đổi ít
+- LinkedList: Khi cần insert/delete ở giữa thường xuyên, size không xác định
+
+### 9.7. DLL vs SLL: Khi nào dùng cái nào?
+
+| Tiêu chí | Single Linked List (SLL) | Doubly Linked List (DLL) |
+| --- | --- | --- |
+| Memory overhead | 1 pointer/node (8 bytes) | 2 pointers/node (16 bytes) |
+| Delete node | Cần biết node trước (O(n)) | O(1) nếu có reference |
+| Reverse traversal | Không thể | Có thể (O(n)) |
+| Insert trước node | O(n) | O(1) |
+| Use case | Stack, Queue, khi chỉ cần forward | LRU Cache, Browser history, Deque |
+
+**Code Java - DLL cho LRU Cache:**
+```java
+class LRUNode {
+    int key, value;
+    LRUNode prev, next;
+    LRUNode(int k, int v) { key = k; value = v; }
+}
+
+class LRUCache {
+    private Map<Integer, LRUNode> cache = new HashMap<>();
+    private LRUNode head, tail;
+    private int capacity;
+
+    // DLL cho phép delete O(1) khi có reference
+    private void removeNode(LRUNode node) {
+        node.prev.next = node.next;
+        node.next.prev = node.prev;
+    }
+
+    private void addToHead(LRUNode node) {
+        node.prev = head;
+        node.next = head.next;
+        head.next.prev = node;
+        head.next = node;
+    }
+}
+```
+
+**Kết luận:** DLL khi cần delete nhanh hoặc reverse traversal, SLL khi tiết kiệm bộ nhớ.
+
+### 9.8. Lock-free Linked List (ConcurrentLinkedQueue)
+
+**Vấn đề:** `java.util.LinkedList` không thread-safe, `Collections.synchronizedList()` chậm do lock contention.
+
+**Giải pháp:** Lock-free bằng **CAS (Compare-And-Swap)** operations.
+
+**Code Java - Lock-free Node:**
+```java
+import java.util.concurrent.atomic.AtomicReference;
+
+class LockFreeNode<T> {
+    T value;
+    AtomicReference<LockFreeNode<T>> next = new AtomicReference<>();
+    
+    LockFreeNode(T value) {
+        this.value = value;
+    }
+}
+
+class LockFreeQueue<T> {
+    private AtomicReference<LockFreeNode<T>> head = 
+        new AtomicReference<>(new LockFreeNode<>(null));
+    private AtomicReference<LockFreeNode<T>> tail = 
+        new AtomicReference<>(head.get());
+
+    public void enqueue(T item) {
+        LockFreeNode<T> node = new LockFreeNode<>(item);
+        while (true) {
+            LockFreeNode<T> last = tail.get();
+            LockFreeNode<T> next = last.next.get();
+            if (last == tail.get()) { // Check không bị modify
+                if (next == null) {
+                    // CAS: Nếu last.next vẫn null → set thành node
+                    if (last.next.compareAndSet(null, node)) {
+                        tail.compareAndSet(last, node); // Update tail
+                        return;
+                    }
+                } else {
+                    tail.compareAndSet(last, next); // Help advance tail
+                }
+            }
+        }
+    }
+}
+```
+
+**Java built-in:** `java.util.concurrent.ConcurrentLinkedQueue` - lock-free, thread-safe, high-performance.
+
+**Performance:** 10-100x nhanh hơn `synchronized` list trong high concurrency scenarios.
+
+### 9.9. Min Stack - O(1) getMin()
+
+**Bài toán:** Implement stack với thêm operation `getMin()` trong O(1).
+
+**Giải pháp 1: 2 Stacks (Auxiliary Stack)**
+```java
+class MinStack {
+    private Stack<Integer> stack = new Stack<>();
+    private Stack<Integer> minStack = new Stack<>(); // Lưu min tại mỗi level
+
+    public void push(int x) {
+        stack.push(x);
+        if (minStack.isEmpty() || x <= minStack.peek()) {
+            minStack.push(x);
+        }
+    }
+
+    public void pop() {
+        if (stack.pop().equals(minStack.peek())) {
+            minStack.pop(); // Nếu pop ra là min → pop minStack
+        }
+    }
+
+    public int getMin() {
+        return minStack.peek(); // O(1)
+    }
+}
+```
+
+**Giải pháp 2: 1 Stack với giá trị encoded**
+```java
+class MinStack2 {
+    private Stack<Long> stack = new Stack<>();
+    private long min;
+
+    public void push(int x) {
+        if (stack.isEmpty()) {
+            stack.push(0L);
+            min = x;
+        } else {
+            stack.push(x - min); // Lưu diff thay vì giá trị thật
+            if (x < min) min = x;
+        }
+    }
+
+    public int pop() {
+        long diff = stack.pop();
+        int val;
+        if (diff < 0) {
+            val = (int) min;
+            min = min - diff; // Restore previous min
+        } else {
+            val = (int) (min + diff);
+        }
+        return val;
+    }
+
+    public int getMin() {
+        return (int) min; // O(1)
+    }
+}
+```
+
+**Trade-offs:**
+- Giải pháp 1: Dễ hiểu, nhưng tốn O(n) space worst case
+- Giải pháp 2: Tiết kiệm space, nhưng phức tạp hơn (integer overflow risk)
+
+### 9.10. Expression Evaluation Engine
+
+**Use case:** Calculator, formula parser, expression compiler.
+
+**Code Java - Evaluate biểu thức với Stack:**
+```java
+import java.util.*;
+
+class ExpressionEvaluator {
+    public int evaluate(String expression) {
+        Stack<Integer> operands = new Stack<>();
+        Stack<Character> operators = new Stack<>();
+        
+        for (int i = 0; i < expression.length(); i++) {
+            char c = expression.charAt(i);
+            if (Character.isDigit(c)) {
+                int num = 0;
+                while (i < expression.length() && Character.isDigit(expression.charAt(i))) {
+                    num = num * 10 + (expression.charAt(i) - '0');
+                    i++;
+                }
+                i--; // Backtrack 1 vì loop sẽ ++
+                operands.push(num);
+            } else if (c == '(') {
+                operators.push(c);
+            } else if (c == ')') {
+                while (operators.peek() != '(') {
+                    operands.push(applyOp(operators.pop(), operands.pop(), operands.pop()));
+                }
+                operators.pop(); // Pop '('
+            } else if (c == '+' || c == '-' || c == '*' || c == '/') {
+                while (!operators.isEmpty() && hasPrecedence(c, operators.peek())) {
+                    operands.push(applyOp(operators.pop(), operands.pop(), operands.pop()));
+                }
+                operators.push(c);
+            }
+        }
+        
+        while (!operators.isEmpty()) {
+            operands.push(applyOp(operators.pop(), operands.pop(), operands.pop()));
+        }
+        
+        return operands.pop();
+    }
+
+    private boolean hasPrecedence(char op1, char op2) {
+        if (op2 == '(' || op2 == ')') return false;
+        return (op1 == '*' || op1 == '/') && (op2 == '+' || op2 == '-');
+    }
+
+    private int applyOp(char op, int b, int a) {
+        switch (op) {
+            case '+': return a + b;
+            case '-': return a - b;
+            case '*': return a * b;
+            case '/': return a / b;
+        }
+        return 0;
+    }
+}
+```
+
+**Test:**
+```java
+ExpressionEvaluator eval = new ExpressionEvaluator();
+System.out.println(eval.evaluate("10 + 2 * 6"));        // 22
+System.out.println(eval.evaluate("100 * 2 + 12"));      // 212
+System.out.println(eval.evaluate("100 * ( 2 + 12 )"));  // 1400
+```
+
+### 9.11. Thread-safe Stack Implementation
+
+**Vấn đề:** `java.util.Stack` extends `Vector` (synchronized mọi method) → chậm, lock contention cao.
+
+**Giải pháp 1: Synchronized wrapper**
+```java
+class ThreadSafeStack<T> {
+    private final Stack<T> stack = new Stack<>();
+    private final Object lock = new Object();
+
+    public void push(T item) {
+        synchronized (lock) {
+            stack.push(item);
+        }
+    }
+
+    public T pop() {
+        synchronized (lock) {
+            return stack.isEmpty() ? null : stack.pop();
+        }
+    }
+}
+```
+
+**Giải pháp 2: Lock-free với AtomicReference (Treiber Stack)**
+```java
+import java.util.concurrent.atomic.AtomicReference;
+
+class LockFreeStack<T> {
+    static class Node<T> {
+        T value;
+        Node<T> next;
+        Node(T value) { this.value = value; }
+    }
+
+    private AtomicReference<Node<T>> top = new AtomicReference<>();
+
+    public void push(T item) {
+        Node<T> newHead = new Node<>(item);
+        Node<T> oldHead;
+        do {
+            oldHead = top.get();
+            newHead.next = oldHead;
+        } while (!top.compareAndSet(oldHead, newHead)); // CAS until success
+    }
+
+    public T pop() {
+        Node<T> oldHead;
+        Node<T> newHead;
+        do {
+            oldHead = top.get();
+            if (oldHead == null) return null;
+            newHead = oldHead.next;
+        } while (!top.compareAndSet(oldHead, newHead));
+        return oldHead.value;
+    }
+}
+```
+
+**Performance comparison:**
+- Synchronized: Safe nhưng chậm (lock contention)
+- Lock-free: Nhanh hơn 2-5x trong high concurrency, nhưng phức tạp hơn
+
+### 9.12. Priority Queue Use Cases
+
+#### 9.12.1. Dijkstra Shortest Path Algorithm
+
+**Code Java:**
+```java
+import java.util.*;
+
+class Dijkstra {
+    public int[] shortestPath(int[][] graph, int start) {
+        int n = graph.length;
+        int[] dist = new int[n];
+        Arrays.fill(dist, Integer.MAX_VALUE);
+        dist[start] = 0;
+
+        // Priority Queue: Lấy node có dist nhỏ nhất
+        PriorityQueue<int[]> pq = new PriorityQueue<>((a, b) -> a[1] - b[1]);
+        pq.offer(new int[]{start, 0});
+
+        while (!pq.isEmpty()) {
+            int[] curr = pq.poll();
+            int u = curr[0], d = curr[1];
+            
+            if (d > dist[u]) continue; // Đã xử lý với dist nhỏ hơn
+
+            for (int v = 0; v < n; v++) {
+                if (graph[u][v] > 0) {
+                    int newDist = dist[u] + graph[u][v];
+                    if (newDist < dist[v]) {
+                        dist[v] = newDist;
+                        pq.offer(new int[]{v, newDist});
+                    }
+                }
+            }
+        }
+        return dist;
+    }
+}
+```
+
+**Time Complexity:** O((V + E) log V) với binary heap, O(V log V + E) với Fibonacci heap.
+
+#### 9.12.2. Task Scheduling (OS)
+
+**Use case:** CPU scheduler, task queue với priority.
+
+```java
+class Task implements Comparable<Task> {
+    String name;
+    int priority; // 1 = highest, 10 = lowest
+    long arrivalTime;
+
+    Task(String name, int priority) {
+        this.name = name;
+        this.priority = priority;
+        this.arrivalTime = System.currentTimeMillis();
+    }
+
+    @Override
+    public int compareTo(Task other) {
+        if (this.priority != other.priority) {
+            return this.priority - other.priority; // Lower priority number = higher priority
+        }
+        return Long.compare(this.arrivalTime, other.arrivalTime); // FIFO nếu cùng priority
+    }
+}
+
+// Usage
+PriorityQueue<Task> taskQueue = new PriorityQueue<>();
+taskQueue.offer(new Task("Critical", 1));
+taskQueue.offer(new Task("Normal", 5));
+taskQueue.offer(new Task("Background", 10));
+
+while (!taskQueue.isEmpty()) {
+    Task task = taskQueue.poll();
+    System.out.println("Executing: " + task.name);
+}
+```
+
+### 9.13. Blocking Queue Implementations
+
+**Vấn đề:** Producer-Consumer pattern cần đợi khi queue empty/full.
+
+**Java cung cấp:**
+
+| Implementation | Internal Structure | Bounded | Use Case |
+| --- | --- | --- | --- |
+| `ArrayBlockingQueue` | Array + 1 lock | ✅ Yes | Fixed-size buffer |
+| `LinkedBlockingQueue` | LinkedList + 2 locks | ✅ Optional | Dynamic size |
+| `PriorityBlockingQueue` | Binary heap | ❌ Unbounded | Priority scheduling |
+| `DelayQueue` | PriorityQueue | ❌ Unbounded | Scheduled tasks |
+
+**Code Java - ArrayBlockingQueue:**
+```java
+import java.util.concurrent.*;
+
+class ProducerConsumer {
+    private final BlockingQueue<Integer> queue = new ArrayBlockingQueue<>(10);
+
+    // Producer
+    class Producer implements Runnable {
+        public void run() {
+            try {
+                for (int i = 0; i < 100; i++) {
+                    queue.put(i); // Block nếu queue đầy
+                    System.out.println("Produced: " + i);
+                    Thread.sleep(100);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    // Consumer
+    class Consumer implements Runnable {
+        public void run() {
+            try {
+                while (true) {
+                    Integer item = queue.take(); // Block nếu queue rỗng
+                    System.out.println("Consumed: " + item);
+                    Thread.sleep(200);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+}
+```
+
+**Trade-offs:**
+- `ArrayBlockingQueue`: Fixed-size, 1 lock → throughput cao, nhưng không linh hoạt
+- `LinkedBlockingQueue`: Dynamic size, 2 locks (head & tail) → throughput cao hơn, nhưng tốn memory hơn
+
+### 9.14. Disruptor Pattern (LMAX)
+
+**Vấn đề:** Traditional queue (ArrayBlockingQueue) có lock contention → bottleneck trong ultra-high throughput scenarios.
+
+**Giải pháp:** **Disruptor** - Lock-free ring buffer, designed cho low-latency trading systems.
+
+**Key Concepts:**
+1. **Ring Buffer**: Fixed-size circular array (power of 2 size)
+2. **Sequence numbers**: Atomic counters để track position
+3. **Wait strategies**: BusySpin, Yielding, Sleeping
+4. **No locks**: CAS operations only
+
+**Performance:**
+- **ArrayBlockingQueue**: ~50M ops/sec
+- **Disruptor**: ~100M+ ops/sec (2x+ faster)
+
+**Code Java - Disruptor Usage:**
+```java
+import com.lmax.disruptor.*;
+
+class LongEvent {
+    private long value;
+    public void set(long value) { this.value = value; }
+    public long get() { return value; }
+}
+
+class LongEventFactory implements EventFactory<LongEvent> {
+    public LongEvent newInstance() { return new LongEvent(); }
+}
+
+class LongEventHandler implements EventHandler<LongEvent> {
+    public void onEvent(LongEvent event, long sequence, boolean endOfBatch) {
+        System.out.println("Event: " + event.get());
+    }
+}
+
+// Setup
+RingBuffer<LongEvent> ringBuffer = RingBuffer.createSingleProducer(
+    new LongEventFactory(), 1024); // 1024 = 2^10
+
+SequenceBarrier sequenceBarrier = ringBuffer.newBarrier();
+BatchEventProcessor<LongEvent> processor = new BatchEventProcessor<>(
+    ringBuffer, sequenceBarrier, new LongEventHandler());
+
+// Publish
+long sequence = ringBuffer.next();
+LongEvent event = ringBuffer.get(sequence);
+event.set(100);
+ringBuffer.publish(sequence);
+```
+
+**When to use:**
+- Ultra-high throughput (>50M events/sec)
+- Low latency requirements (<1ms p99)
+- Financial trading systems, real-time analytics
+
+### 9.15. Segment Tree (Range Query)
+
+**Vấn đề:** Query sum/min/max trong range [L, R] với nhiều updates.
+
+**Naive approach:** O(n) cho mỗi query → quá chậm khi có 1M queries.
+
+**Giải pháp:** Segment Tree - O(log n) query và update.
+
+**Code Java - Segment Tree cho Range Sum:**
+```java
+class SegmentTree {
+    private int[] tree;
+    private int n;
+
+    public SegmentTree(int[] nums) {
+        n = nums.length;
+        tree = new int[4 * n]; // Safe size
+        buildTree(nums, 0, 0, n - 1);
+    }
+
+    private void buildTree(int[] nums, int node, int start, int end) {
+        if (start == end) {
+            tree[node] = nums[start];
+        } else {
+            int mid = (start + end) / 2;
+            buildTree(nums, 2 * node + 1, start, mid);
+            buildTree(nums, 2 * node + 2, mid + 1, end);
+            tree[node] = tree[2 * node + 1] + tree[2 * node + 2];
+        }
+    }
+
+    public void update(int index, int val) {
+        update(0, 0, n - 1, index, val);
+    }
+
+    private void update(int node, int start, int end, int idx, int val) {
+        if (start == end) {
+            tree[node] = val;
+        } else {
+            int mid = (start + end) / 2;
+            if (idx <= mid) {
+                update(2 * node + 1, start, mid, idx, val);
+            } else {
+                update(2 * node + 2, mid + 1, end, idx, val);
+            }
+            tree[node] = tree[2 * node + 1] + tree[2 * node + 2];
+        }
+    }
+
+    public int queryRange(int left, int right) {
+        return queryRange(0, 0, n - 1, left, right);
+    }
+
+    private int queryRange(int node, int start, int end, int l, int r) {
+        if (r < start || end < l) return 0; // Out of range
+        if (l <= start && end <= r) return tree[node]; // Fully in range
+        
+        int mid = (start + end) / 2;
+        return queryRange(2 * node + 1, start, mid, l, r) +
+               queryRange(2 * node + 2, mid + 1, end, l, r);
+    }
+}
+
+// Usage
+int[] nums = {1, 3, 5, 7, 9, 11};
+SegmentTree st = new SegmentTree(nums);
+System.out.println(st.queryRange(1, 3)); // 3 + 5 + 7 = 15
+st.update(2, 10);
+System.out.println(st.queryRange(1, 3)); // 3 + 10 + 7 = 20
+```
+
+**Use cases:**
+- Range sum/min/max queries với updates
+- Competitive programming (LeetCode Segment Tree problems)
+- Database range queries optimization
+
+### 9.16. Fenwick Tree (Binary Indexed Tree)
+
+**Vấn đề:** Segment Tree tốn O(4n) memory và code phức tạp → cần giải pháp đơn giản hơn cho range sum.
+
+**Giải pháp:** **Fenwick Tree** - O(n) memory, code ngắn gọn, O(log n) query/update.
+
+**Code Java:**
+```java
+class FenwickTree {
+    private int[] tree;
+    private int n;
+
+    public FenwickTree(int size) {
+        n = size;
+        tree = new int[n + 1]; // 1-indexed
+    }
+
+    // Update: Thêm delta vào nums[i], cập nhật tất cả ancestors
+    public void update(int i, int delta) {
+        i++; // Convert to 1-indexed
+        while (i <= n) {
+            tree[i] += delta;
+            i += i & -i; // Move to parent (lowest set bit trick)
+        }
+    }
+
+    // Query: Tổng từ nums[0] đến nums[i]
+    public int query(int i) {
+        i++; // Convert to 1-indexed
+        int sum = 0;
+        while (i > 0) {
+            sum += tree[i];
+            i -= i & -i; // Move to previous range
+        }
+        return sum;
+    }
+
+    // Range query: Sum từ [l, r]
+    public int rangeQuery(int l, int r) {
+        return query(r) - query(l - 1);
+    }
+}
+
+// Usage
+FenwickTree ft = new FenwickTree(6);
+ft.update(0, 1);
+ft.update(1, 3);
+ft.update(2, 5);
+ft.update(3, 7);
+ft.update(4, 9);
+ft.update(5, 11);
+
+System.out.println(ft.rangeQuery(1, 3)); // 3 + 5 + 7 = 15
+ft.update(2, 5); // Add 5 to index 2: 5 → 10
+System.out.println(ft.rangeQuery(1, 3)); // 3 + 10 + 7 = 20
+```
+
+**So sánh với Segment Tree:**
+
+| Tiêu chí | Fenwick Tree | Segment Tree |
+| --- | --- | --- |
+| Memory | O(n) | O(4n) |
+| Code complexity | Đơn giản (~20 lines) | Phức tạp (~50+ lines) |
+| Range query | Chỉ range sum | Sum/min/max/any function |
+| Update | Chỉ point update | Point + range update |
+| Use case | Range sum only | General range queries |
+
+**Best practice:** Dùng Fenwick Tree khi chỉ cần range sum, dùng Segment Tree khi cần range min/max hoặc custom aggregation.
+
+### 9.17. Fibonacci Heap vs Binary Heap
+
+**Vấn đề:** Binary Heap có O(log n) decrease-key → Dijkstra với nhiều edges chậm.
+
+**Giải pháp:** **Fibonacci Heap** - O(1) amortized decrease-key.
+
+| Operation | Binary Heap | Fibonacci Heap |
+| --- | --- | --- |
+| Insert | O(log n) | O(1) amortized |
+| Extract-min | O(log n) | O(log n) amortized |
+| Decrease-key | O(log n) | **O(1) amortized** |
+| Delete | O(log n) | O(log n) amortized |
+
+**Dijkstra Complexity:**
+- Binary Heap: O((V + E) log V)
+- Fibonacci Heap: **O(E + V log V)** - tốt hơn khi E >> V (dense graph)
+
+**Code Java - Fibonacci Heap (simplified):**
+```java
+// Note: Java không có built-in Fibonacci Heap, phải implement hoặc dùng thư viện
+// Dưới đây là conceptual structure
+
+class FibonacciNode<T> {
+    T key;
+    FibonacciNode<T> parent;
+    FibonacciNode<T> child;
+    FibonacciNode<T> left, right; // Circular doubly linked list
+    boolean marked;
+    int degree; // Number of children
+}
+
+class FibonacciHeap<T extends Comparable<T>> {
+    private FibonacciNode<T> min; // Pointer to minimum node
+    private int size;
+
+    // O(1) amortized
+    public void insert(T key) {
+        FibonacciNode<T> node = new FibonacciNode<>(key);
+        // Add to root list
+        // Update min if needed
+    }
+
+    // O(1) amortized
+    public void decreaseKey(FibonacciNode<T> node, T newKey) {
+        // Cut node from parent if newKey < parent.key
+        // Cascading cut if parent was marked
+        // Update min if needed
+    }
+
+    // O(log n) amortized
+    public T extractMin() {
+        // Remove min, add children to root list
+        // Consolidate trees (merge same degree)
+        // Update min
+        return min.key;
+    }
+}
+```
+
+**When to use:**
+- Dijkstra/ Prim với dense graphs (E >> V)
+- Algorithms cần nhiều decrease-key operations
+- **Rarely used in practice** vì constant factors lớn → Binary Heap thường đủ nhanh
+
+### 9.18. Top-K Problems Solutions
+
+**Bài toán:** Tìm K phần tử lớn nhất/nhỏ nhất trong array/stream.
+
+**Solution 1: Min Heap (cho Top-K largest)**
+```java
+class TopK {
+    public int[] findTopKLargest(int[] nums, int k) {
+        // Min heap size K: Giữ K phần tử lớn nhất
+        PriorityQueue<Integer> pq = new PriorityQueue<>();
+        
+        for (int num : nums) {
+            pq.offer(num);
+            if (pq.size() > k) {
+                pq.poll(); // Loại bỏ phần tử nhỏ nhất
+            }
+        }
+        
+        return pq.stream().mapToInt(i -> i).toArray();
+    }
+}
+```
+
+**Time Complexity:** O(n log k) - tốt hơn sorting O(n log n) khi k << n.
+
+**Solution 2: QuickSelect (khi cần 1 lần query)**
+```java
+class TopKQuickSelect {
+    public int findKthLargest(int[] nums, int k) {
+        return quickSelect(nums, 0, nums.length - 1, nums.length - k);
+    }
+
+    private int quickSelect(int[] nums, int left, int right, int k) {
+        if (left == right) return nums[left];
+        
+        int pivotIndex = partition(nums, left, right);
+        
+        if (k == pivotIndex) {
+            return nums[k];
+        } else if (k < pivotIndex) {
+            return quickSelect(nums, left, pivotIndex - 1, k);
+        } else {
+            return quickSelect(nums, pivotIndex + 1, right, k);
+        }
+    }
+
+    private int partition(int[] nums, int left, int right) {
+        int pivot = nums[right];
+        int i = left;
+        for (int j = left; j < right; j++) {
+            if (nums[j] <= pivot) {
+                swap(nums, i++, j);
+            }
+        }
+        swap(nums, i, right);
+        return i;
+    }
+}
+```
+
+**Time Complexity:** O(n) average, O(n²) worst case.
+
+**Comparison:**
+
+| Solution | Time | Space | Use Case |
+| --- | --- | --- | --- |
+| Sorting | O(n log n) | O(1) | Khi cần tất cả |
+| Min/Max Heap | O(n log k) | O(k) | **Streaming data**, K << n |
+| QuickSelect | O(n) avg | O(1) | One-time query |
+| Bucket Sort | O(n) | O(n) | Range nhỏ, integers |
+
+### 9.19. Median Maintenance Problem
+
+**Bài toán:** Maintain median của stream số động (thêm số mới → update median).
+
+**Giải pháp:** **2 Heaps** - Max heap cho nửa dưới, Min heap cho nửa trên.
+
+```java
+class MedianFinder {
+    private PriorityQueue<Integer> maxHeap; // Nửa dưới (smaller half)
+    private PriorityQueue<Integer> minHeap; // Nửa trên (larger half)
+
+    public MedianFinder() {
+        maxHeap = new PriorityQueue<>(Collections.reverseOrder()); // Max heap
+        minHeap = new PriorityQueue<>(); // Min heap
+    }
+
+    public void addNum(int num) {
+        // Luôn add vào maxHeap trước
+        maxHeap.offer(num);
+        // Balance: maxHeap.max <= minHeap.min
+        minHeap.offer(maxHeap.poll());
+        
+        // Giữ maxHeap.size >= minHeap.size (hoặc +1)
+        if (maxHeap.size() < minHeap.size()) {
+            maxHeap.offer(minHeap.poll());
+        }
+    }
+
+    public double findMedian() {
+        if (maxHeap.size() > minHeap.size()) {
+            return maxHeap.peek(); // Odd count
+        } else {
+            return (maxHeap.peek() + minHeap.peek()) / 2.0; // Even count
+        }
+    }
+}
+
+// Usage
+MedianFinder mf = new MedianFinder();
+mf.addNum(1);    // Median: 1
+mf.addNum(2);    // Median: 1.5
+mf.addNum(3);    // Median: 2
+mf.addNum(4);    // Median: 2.5
+```
+
+**Time Complexity:** O(log n) mỗi add, O(1) query median.
+
+**Use cases:**
+- Real-time median tracking (trading, statistics)
+- Sliding window median (LeetCode 480)
+- Online algorithms
+
+### 9.20. TreeMap Internal Implementation
+
+**TreeMap** trong Java dùng **Red-Black Tree** → O(log n) cho insert/delete/search.
+
+**Code Java - TreeMap Structure:**
+```java
+// TreeMap internal (simplified)
+class TreeMapEntry<K, V> {
+    K key;
+    V value;
+    TreeMapEntry<K, V> left;
+    TreeMapEntry<K, V> right;
+    TreeMapEntry<K, V> parent;
+    boolean color = BLACK; // Red-Black Tree color
+
+    // Red-Black Tree operations:
+    // - Left rotate / Right rotate
+    // - Fix-up after insert/delete
+}
+```
+
+**Key Methods:**
+```java
+import java.util.*;
+
+TreeMap<Integer, String> map = new TreeMap<>();
+map.put(3, "Three");
+map.put(1, "One");
+map.put(2, "Two");
+
+// O(log n) operations
+map.get(2);                    // "Two"
+map.floorEntry(2);             // Entry(2, "Two") - largest <= 2
+map.ceilingEntry(2);           // Entry(2, "Two") - smallest >= 2
+map.subMap(1, 3);              // Range [1, 3)
+map.descendingMap();           // Reversed view
+
+// Range queries - O(log n + k) where k = result size
+map.headMap(3);                // Entries < 3
+map.tailMap(2);                // Entries >= 2
+```
+
+### 9.21. TreeMap vs HashMap: Khi nào dùng cái nào?
+
+| Tiêu chí | HashMap | TreeMap |
+| --- | --- | --- |
+| **Ordering** | ❌ Không có thứ tự | ✅ Sorted (natural/comparator) |
+| **Time Complexity** | O(1) average | O(log n) |
+| **Null keys** | ✅ 1 null key | ❌ Không cho phép |
+| **Range queries** | ❌ Không hỗ trợ | ✅ headMap, tailMap, subMap |
+| **Memory** | Ít hơn | Nhiều hơn (tree overhead) |
+| **Use Case** | General purpose | **Sorted data**, range queries |
+
+**Code Java - Decision Matrix:**
+```java
+// Dùng HashMap khi:
+// - Cần O(1) lookup
+// - Không cần ordering
+Map<String, Integer> wordCount = new HashMap<>();
+wordCount.put("hello", 5);
+
+// Dùng TreeMap khi:
+// - Cần sorted keys
+// - Cần range queries
+// - Cần floor/ceiling operations
+TreeMap<Integer, String> leaderboard = new TreeMap<>();
+leaderboard.put(100, "Alice");
+leaderboard.put(95, "Bob");
+leaderboard.put(90, "Charlie");
+leaderboard.floorEntry(97); // Entry(95, "Bob") - closest <= 97
+
+// Dùng LinkedHashMap khi cần insertion order
+Map<String, Integer> lruCache = new LinkedHashMap<>(16, 0.75f, true);
+```
+
+**Real-world Examples:**
+- **HashMap**: Cache, lookup table, general key-value storage
+- **TreeMap**: Leaderboard, time-series data, scheduler với priority
+- **LinkedHashMap**: LRU Cache (với access order = true)
+
+### 9.22. Concurrent Tree Implementations
+
+**Vấn đề:** `TreeMap` không thread-safe, `Collections.synchronizedMap()` chậm.
+
+**Giải pháp:**
+
+| Solution | Thread-safe? | Performance | Notes |
+| --- | --- | --- | --- |
+| `Collections.synchronizedMap(new TreeMap<>())` | ✅ | Chậm (lock toàn bộ) | Đơn giản nhưng bottleneck |
+| `ConcurrentSkipListMap` | ✅ | Tốt (lock-free ranges) | **Recommended** - Skip list based |
+| Custom lock-striping | ✅ | Tốt hơn synchronized | Phức tạp, phải implement |
+
+**Code Java - ConcurrentSkipListMap:**
+```java
+import java.util.concurrent.*;
+
+class ConcurrentTreeExample {
+    private ConcurrentSkipListMap<Integer, String> map = 
+        new ConcurrentSkipListMap<>();
+
+    // Thread-safe, lock-free cho read-heavy workloads
+    public void add(int key, String value) {
+        map.put(key, value); // Thread-safe
+    }
+
+    // Range queries cũng thread-safe
+    public Map<Integer, String> getRange(int from, int to) {
+        return map.subMap(from, to); // Thread-safe view
+    }
+}
+```
+
+**Performance:**
+- `ConcurrentSkipListMap`: 5-10x nhanh hơn `synchronized TreeMap` trong concurrent scenarios
+- Lock-free ranges → multiple threads có thể query ranges khác nhau đồng thời
+
 ---
 
 *Kết thúc Phần 1.1: Cấu trúc Dữ liệu*

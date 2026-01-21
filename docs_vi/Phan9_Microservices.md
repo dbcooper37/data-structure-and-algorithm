@@ -562,6 +562,791 @@ spring:
 
 ---
 
+## 9.6. Advanced Microservices & Production Solutions
+
+### 9.6.1. Service Decomposition Strategies Chi tiết
+
+#### Strategy 1: By Business Capability (Theo Khả năng Nghiệp vụ)
+
+**Concept:** Tách services theo business functions.
+
+**Example: E-commerce System**
+```
+Monolith
+├─ User Management
+├─ Product Catalog
+├─ Order Processing
+├─ Payment Processing
+└─ Shipping Management
+
+↓ Decompose
+
+User Service
+├─ User registration
+├─ Authentication
+└─ Profile management
+
+Product Service
+├─ Product catalog
+├─ Inventory management
+└─ Search
+
+Order Service
+├─ Order creation
+├─ Order tracking
+└─ Order history
+
+Payment Service
+├─ Payment processing
+├─ Refund handling
+└─ Payment gateway integration
+
+Shipping Service
+├─ Shipping calculation
+├─ Delivery tracking
+└─ Carrier integration
+```
+
+**Pros:**
+- ✅ Clear business boundaries
+- ✅ Team ownership (each team owns a service)
+- ✅ Independent deployment
+
+**Cons:**
+- ⚠️ May create data coupling (Order needs User data)
+
+#### Strategy 2: By Subdomain (DDD - Domain-Driven Design)
+
+**Concept:** Tách theo **bounded contexts** (User Context, Order Context, Product Context).
+
+**DDD Concepts:**
+- **Bounded Context**: Boundary của domain model
+- **Aggregate**: Cluster của related entities (User Aggregate, Order Aggregate)
+- **Domain Events**: Events xảy ra trong bounded context
+
+**Example:**
+```java
+// User Context
+@Aggregate
+public class UserAggregate {
+    private UserId id;
+    private Email email;
+    private UserProfile profile;
+    
+    // Domain Event
+    public UserCreatedEvent createUser(Email email) {
+        User user = new User(email);
+        // Business logic
+        return new UserCreatedEvent(user.getId());
+    }
+}
+
+// Order Context (sử dụng UserId, không có User entity)
+@Aggregate
+public class OrderAggregate {
+    private OrderId id;
+    private UserId userId; // Reference to User Context
+    private List<OrderLine> lines;
+    
+    public OrderCreatedEvent createOrder(UserId userId, List<OrderLine> lines) {
+        Order order = new Order(userId, lines);
+        return new OrderCreatedEvent(order.getId());
+    }
+}
+```
+
+**Event-Driven Communication:**
+```java
+// User Service publishes event
+@EventListener
+public void handleUserCreated(UserCreatedEvent event) {
+    eventPublisher.publish(new UserCreatedEvent(event.getUserId()));
+}
+
+// Order Service subscribes to event
+@KafkaListener(topics = "user-created")
+public void handleUserCreated(UserCreatedEvent event) {
+    // Create order context data if needed
+    orderService.initializeUserContext(event.getUserId());
+}
+```
+
+#### Strategy 3: Strangler Fig Pattern (Migrate từ Monolith)
+
+**Concept:** Gradually replace monolith bằng microservices.
+
+**Phases:**
+
+**Phase 1: Identify Feature** → Extract candidate feature
+```
+Monolith
+└─ Payment Module (candidate)
+```
+
+**Phase 2: Build Service** → Create microservice
+```
+Payment Service (new)
+```
+
+**Phase 3: Route Traffic** → Gradually route traffic
+```
+Client
+├─ 10% → Payment Service (new)
+└─ 90% → Monolith (old)
+```
+
+**Phase 4: Complete Migration** → Route 100% traffic
+```
+Client → Payment Service (100%)
+Monolith (remove Payment code)
+```
+
+**Code Example:**
+```java
+// Strangler Fig Router
+@Component
+public class PaymentRouter {
+    private final PaymentServiceClient newService;
+    private final MonolithPaymentService oldService;
+    
+    @Value("${payment.migration.percentage}")
+    private int migrationPercentage;
+    
+    public PaymentResult processPayment(PaymentRequest request) {
+        // Route based on percentage
+        if (shouldUseNewService(request)) {
+            return newService.processPayment(request);
+        } else {
+            return oldService.processPayment(request);
+        }
+    }
+    
+    private boolean shouldUseNewService(PaymentRequest request) {
+        // Canary: Route specific users first
+        if (request.getUserId() % 100 < migrationPercentage) {
+            return true;
+        }
+        return false;
+    }
+}
+```
+
+### 9.6.2. Inter-Service Communication Chi tiết
+
+#### Synchronous Communication Patterns
+
+**1. Request-Response (REST/RPC)**
+```java
+// REST API
+@RestController
+public class OrderController {
+    @Autowired
+    private UserServiceClient userService;
+    
+    @GetMapping("/orders/{orderId}")
+    public OrderDTO getOrder(@PathVariable Long orderId) {
+        // Synchronous call to User Service
+        UserDTO user = userService.getUser(order.getUserId());
+        
+        OrderDTO orderDTO = convertToDTO(order);
+        orderDTO.setUser(user);
+        return orderDTO;
+    }
+}
+```
+
+**2. Service Mesh Communication (Istio)**
+```yaml
+# VirtualService: Route to service
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: order-service
+spec:
+  hosts:
+    - order-service
+  http:
+    - route:
+        - destination:
+            host: order-service
+            subset: v1
+```
+
+**3. Circuit Breaker Pattern**
+```java
+@Service
+public class UserServiceClient {
+    @Autowired
+    private CircuitBreaker circuitBreaker;
+    
+    public UserDTO getUser(Long userId) {
+        Supplier<UserDTO> decorated = CircuitBreaker.decorateSupplier(
+            circuitBreaker,
+            () -> restTemplate.getForObject("/users/" + userId, UserDTO.class)
+        );
+        
+        return Try.ofSupplier(decorated)
+            .recover(Exception.class, e -> fallbackUser(userId))
+            .get();
+    }
+    
+    private UserDTO fallbackUser(Long userId) {
+        // Return cached user or default user
+        return userCache.get(userId).orElse(new UserDTO(userId, "Unknown"));
+    }
+}
+```
+
+#### Asynchronous Communication Patterns
+
+**1. Event-Driven (Pub/Sub)**
+```java
+// Publisher (Order Service)
+@Service
+public class OrderService {
+    @Autowired
+    private KafkaTemplate<String, String> kafka;
+    
+    public void createOrder(Order order) {
+        // Save order
+        orderRepository.save(order);
+        
+        // Publish event
+        OrderCreatedEvent event = new OrderCreatedEvent(
+            order.getId(),
+            order.getUserId(),
+            order.getAmount()
+        );
+        kafka.send("order-created", JSON.toJSONString(event));
+    }
+}
+
+// Subscriber (Payment Service)
+@KafkaListener(topics = "order-created")
+public void handleOrderCreated(OrderCreatedEvent event) {
+    // Process payment
+    paymentService.processPayment(event.getOrderId(), event.getAmount());
+}
+```
+
+**2. Message Queue (Request-Reply)**
+```java
+// Requestor (Order Service)
+@Service
+public class OrderService {
+    @Autowired
+    private RabbitTemplate rabbitTemplate;
+    
+    public PaymentResult processPayment(Order order) {
+        // Send request
+        PaymentRequest request = new PaymentRequest(order.getId(), order.getAmount());
+        PaymentResult result = (PaymentResult) rabbitTemplate.convertSendAndReceive(
+            "payment-request",
+            request
+        );
+        
+        return result;
+    }
+}
+
+// Replier (Payment Service)
+@RabbitListener(queues = "payment-request")
+public PaymentResult handlePaymentRequest(PaymentRequest request) {
+    return paymentService.process(request);
+}
+```
+
+**3. Saga Pattern (Long-Running Transaction)**
+```java
+// Saga Orchestrator
+@Service
+public class OrderSagaOrchestrator {
+    public void createOrder(Order order) {
+        SagaTransaction saga = new SagaTransaction();
+        
+        try {
+            // Step 1: Reserve inventory
+            saga.addStep(() -> inventoryService.reserve(order.getProductId(), order.getQuantity()));
+            
+            // Step 2: Process payment
+            saga.addStep(() -> paymentService.process(order.getUserId(), order.getAmount()));
+            
+            // Step 3: Create shipping
+            saga.addStep(() -> shippingService.create(order));
+            
+            // Execute saga
+            saga.execute();
+            
+        } catch (Exception e) {
+            // Compensate (rollback)
+            saga.compensate();
+            throw e;
+        }
+    }
+}
+```
+
+### 9.6.3. Data Consistency Patterns Chi tiết
+
+#### Pattern 1: Database per Service
+
+**Concept:** Mỗi service có database riêng → Strong isolation.
+
+**Example:**
+```
+User Service → User DB (MySQL)
+Order Service → Order DB (PostgreSQL)
+Product Service → Product DB (MongoDB)
+```
+
+**Pros:**
+- ✅ Service independence
+- ✅ Technology diversity
+- ✅ Fault isolation
+
+**Cons:**
+- ❌ Cross-service queries difficult
+- ❌ Distributed transactions needed
+
+#### Pattern 2: Shared Database (Anti-Pattern)
+
+**❌ Don't Use:**
+```
+User Service ─┐
+Order Service ┼─→ Shared Database
+Product Service ┘
+```
+
+**Problems:**
+- ❌ Tight coupling
+- ❌ Schema changes affect all services
+- ❌ No service independence
+
+#### Pattern 3: Saga Pattern (Eventual Consistency)
+
+**Concept:** Long-running transaction split into multiple local transactions.
+
+**Types:**
+
+**1. Choreography (Event-Driven)**
+```java
+// Order Service
+public void createOrder(Order order) {
+    orderRepository.save(order);
+    eventPublisher.publish(new OrderCreatedEvent(order));
+}
+
+// Inventory Service (subscribes)
+@KafkaListener(topics = "order-created")
+public void handleOrderCreated(OrderCreatedEvent event) {
+    inventoryService.reserve(event.getProductId(), event.getQuantity());
+    eventPublisher.publish(new InventoryReservedEvent(event.getOrderId()));
+}
+
+// Payment Service (subscribes)
+@KafkaListener(topics = "inventory-reserved")
+public void handleInventoryReserved(InventoryReservedEvent event) {
+    paymentService.process(event.getOrderId());
+    eventPublisher.publish(new PaymentProcessedEvent(event.getOrderId()));
+}
+```
+
+**2. Orchestration (Centralized)**
+```java
+// Saga Orchestrator
+@Service
+public class OrderSagaOrchestrator {
+    public void createOrder(Order order) {
+        SagaContext context = new SagaContext(order);
+        
+        try {
+            // Step 1: Reserve inventory
+            context.setInventoryReservation(
+                inventoryService.reserve(order.getProductId(), order.getQuantity())
+            );
+            
+            // Step 2: Process payment
+            context.setPaymentResult(
+                paymentService.process(order.getUserId(), order.getAmount())
+            );
+            
+            // Step 3: Create shipping
+            shippingService.create(order);
+            
+            // All steps successful
+            context.markComplete();
+            
+        } catch (Exception e) {
+            // Compensate
+            compensate(context);
+            throw e;
+        }
+    }
+    
+    private void compensate(SagaContext context) {
+        if (context.getPaymentResult() != null) {
+            paymentService.refund(context.getPaymentResult().getTransactionId());
+        }
+        if (context.getInventoryReservation() != null) {
+            inventoryService.release(context.getInventoryReservation().getId());
+        }
+    }
+}
+```
+
+#### Pattern 4: CQRS (Command Query Responsibility Segregation)
+
+**Concept:** Separate read and write models.
+
+**Architecture:**
+```
+Write Model (Command Side)
+├─ Order Service (writes to Order DB)
+└─ Publish events
+
+Read Model (Query Side)
+├─ Order Query Service (reads from Read DB)
+└─ Subscribe to events → Update Read DB
+```
+
+**Example:**
+```java
+// Write Side (Order Service)
+@Service
+public class OrderCommandService {
+    public void createOrder(Order order) {
+        // Write to write DB
+        orderRepository.save(order);
+        
+        // Publish event
+        eventPublisher.publish(new OrderCreatedEvent(order));
+    }
+}
+
+// Read Side (Order Query Service)
+@Service
+public class OrderQueryService {
+    @KafkaListener(topics = "order-created")
+    public void handleOrderCreated(OrderCreatedEvent event) {
+        // Update read DB (denormalized for fast queries)
+        OrderReadModel readModel = convertToReadModel(event.getOrder());
+        orderReadRepository.save(readModel);
+    }
+    
+    public List<OrderDTO> getOrdersByUser(Long userId) {
+        // Fast query from read DB (optimized for reads)
+        return orderReadRepository.findByUserId(userId);
+    }
+}
+```
+
+**Benefits:**
+- ✅ Optimized read model (denormalized, fast queries)
+- ✅ Optimized write model (normalized, ACID)
+- ✅ Independent scaling
+
+#### Pattern 5: Event Sourcing
+
+**Concept:** Store events instead of current state.
+
+**Example:**
+```java
+// Event Store
+@Entity
+public class OrderEvent {
+    @Id
+    private Long id;
+    private Long orderId;
+    private String eventType; // ORDER_CREATED, ITEM_ADDED, PAYMENT_PROCESSED
+    private String eventData; // JSON
+    private LocalDateTime timestamp;
+}
+
+// Aggregate rebuilds state from events
+@Service
+public class OrderAggregate {
+    public Order rebuildFromEvents(Long orderId) {
+        List<OrderEvent> events = eventStore.getEvents(orderId);
+        
+        Order order = new Order();
+        for (OrderEvent event : events) {
+            applyEvent(order, event);
+        }
+        
+        return order;
+    }
+    
+    private void applyEvent(Order order, OrderEvent event) {
+        switch (event.getEventType()) {
+            case "ORDER_CREATED":
+                order = JSON.parseObject(event.getEventData(), Order.class);
+                break;
+            case "ITEM_ADDED":
+                OrderItem item = JSON.parseObject(event.getEventData(), OrderItem.class);
+                order.addItem(item);
+                break;
+            // ...
+        }
+    }
+}
+```
+
+**Benefits:**
+- ✅ Complete audit trail
+- ✅ Time travel (replay events to any point in time)
+- ✅ Event replay for new read models
+
+### 9.6.4. API Gateway Patterns Chi tiết
+
+#### Pattern 1: Single API Gateway
+
+**Architecture:**
+```
+Clients → API Gateway → Services
+```
+
+**Responsibilities:**
+- Authentication/Authorization
+- Rate limiting
+- Request routing
+- Load balancing
+- Request/Response transformation
+- Monitoring
+
+**Spring Cloud Gateway Example:**
+```yaml
+spring:
+  cloud:
+    gateway:
+      routes:
+        - id: user-service
+          uri: lb://user-service
+          predicates:
+            - Path=/api/users/**
+          filters:
+            - StripPrefix=2
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 10
+                redis-rate-limiter.burstCapacity: 20
+```
+
+#### Pattern 2: Backend for Frontend (BFF)
+
+**Concept:** Different API Gateway for each client type.
+
+**Architecture:**
+```
+Web Client → Web BFF → Services
+Mobile Client → Mobile BFF → Services
+Admin Client → Admin BFF → Services
+```
+
+**Benefits:**
+- ✅ Optimized API for each client
+- ✅ Different authentication (web: session, mobile: JWT)
+- ✅ Different rate limits
+
+**Example:**
+```java
+// Web BFF
+@RestController
+@RequestMapping("/web/api")
+public class WebBFFController {
+    // Returns HTML-friendly data
+    @GetMapping("/orders")
+    public ResponseEntity<WebOrderDTO> getOrders() {
+        // Aggregates data from multiple services
+        // Formats for web display
+    }
+}
+
+// Mobile BFF
+@RestController
+@RequestMapping("/mobile/api")
+public class MobileBFFController {
+    // Returns mobile-optimized data
+    @GetMapping("/orders")
+    public ResponseEntity<MobileOrderDTO> getOrders() {
+        // Lightweight JSON
+        // Optimized for mobile network
+    }
+}
+```
+
+### 9.6.5. Service Mesh Deep Dive
+
+#### Istio Architecture
+
+**Components:**
+```
+Data Plane: Envoy Proxy (sidecar)
+Control Plane: Istiod (Pilot, Citadel, Galley)
+```
+
+**Traffic Management:**
+```yaml
+# VirtualService: Route rules
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: order-service
+spec:
+  hosts:
+    - order-service
+  http:
+    - match:
+        - headers:
+            canary:
+              exact: "true"
+      route:
+        - destination:
+            host: order-service
+            subset: v2
+          weight: 100
+    - route:
+        - destination:
+            host: order-service
+            subset: v1
+          weight: 90
+        - destination:
+            host: order-service
+            subset: v2
+          weight: 10
+```
+
+**Security (mTLS):**
+```yaml
+# PeerAuthentication: Enforce mTLS
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+spec:
+  mtls:
+    mode: STRICT  # Enforce mTLS between services
+```
+
+**Observability:**
+```yaml
+# Automatic metrics, logs, traces
+# - Prometheus metrics
+# - Access logs
+# - Distributed tracing
+```
+
+#### Service Mesh vs API Gateway
+
+| Aspect | API Gateway | Service Mesh |
+| --- | --- | --- |
+| **Layer** | Edge (north-south traffic) | Internal (east-west traffic) |
+| **Traffic** | Client → Services | Service → Service |
+| **Features** | Auth, Rate limit, Routing | mTLS, Observability, Circuit breaker |
+| **Use Case** | External API access | Internal service communication |
+
+**Combined Architecture:**
+```
+Clients → API Gateway → Services (with Service Mesh)
+                        ↓
+                  Service Mesh (mTLS, Observability)
+```
+
+### 9.6.6. Production Scenarios
+
+#### Scenario 1: Service Dependency Chain Failure
+
+**Problem:** Service A → Service B → Service C, if C fails → Cascading failure.
+
+**Solution: Circuit Breaker + Fallback**
+```java
+@Service
+public class OrderService {
+    @Autowired
+    private PaymentServiceClient paymentService;
+    
+    public OrderResult createOrder(Order order) {
+        try {
+            // Call payment service with circuit breaker
+            PaymentResult payment = paymentService.process(order);
+            
+            // Create order
+            return orderRepository.save(order);
+            
+        } catch (PaymentServiceException e) {
+            // Fallback: Queue for later processing
+            messageQueue.send("payment-retry", order);
+            return new OrderResult("QUEUED", "Order queued for payment retry");
+        }
+    }
+}
+```
+
+#### Scenario 2: Data Consistency Across Services
+
+**Problem:** Order created in Order Service, but payment failed in Payment Service → Inconsistent state.
+
+**Solution: Saga Pattern**
+```java
+@Service
+public class OrderSagaService {
+    public void createOrder(Order order) {
+        SagaTransaction saga = new SagaTransaction();
+        
+        try {
+            // Step 1: Create order
+            saga.addStep(() -> {
+                orderRepository.save(order);
+                return new OrderCreatedEvent(order.getId());
+            });
+            
+            // Step 2: Process payment
+            saga.addStep(() -> {
+                return paymentService.process(order);
+            });
+            
+            // Execute
+            saga.execute();
+            
+        } catch (Exception e) {
+            // Compensate
+            saga.compensate();
+            throw e;
+        }
+    }
+}
+```
+
+#### Scenario 3: Service Versioning
+
+**Problem:** Need to deploy new version without breaking existing clients.
+
+**Solution: API Versioning**
+```java
+// Version 1
+@RestController
+@RequestMapping("/api/v1/orders")
+public class OrderControllerV1 {
+    @GetMapping("/{id}")
+    public OrderV1DTO getOrder(@PathVariable Long id) {
+        // V1 response format
+    }
+}
+
+// Version 2
+@RestController
+@RequestMapping("/api/v2/orders")
+public class OrderControllerV2 {
+    @GetMapping("/{id}")
+    public OrderV2DTO getOrder(@PathVariable Long id) {
+        // V2 response format (enhanced)
+    }
+}
+
+// Clients can gradually migrate from v1 to v2
+```
+
+---
+
 ## Tổng kết Phần 9: Microservices
 
 Đã hoàn thành **Phần 9: Microservices Architecture** với nội dung toàn diện:

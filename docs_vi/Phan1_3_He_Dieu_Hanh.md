@@ -502,4 +502,594 @@ ss -tulpn          # (thay thế netstat)
 
 ---
 
+## 9. Advanced Operating System Solutions
+
+### 9.1. Process Management Solutions Chi tiết
+
+#### Process Scheduling Algorithms
+
+**1. First-Come-First-Served (FCFS)**
+- Non-preemptive: Process chạy đến khi hoàn thành
+- **Problem**: Convoy effect (short process phải đợi long process)
+- **Use Case**: Batch systems
+
+**2. Shortest Job First (SJF)**
+- Non-preemptive: Process ngắn nhất chạy trước
+- **Problem**: Long process có thể bị starvation
+- **Use Case**: Batch systems
+
+**3. Round Robin (RR)**
+- Preemptive: Mỗi process có time slice (quantum)
+- **Quantum**: Thường 10-100ms
+- **Problem**: Quantum quá nhỏ → context switch overhead
+- **Use Case**: **Interactive systems** (recommended)
+
+**4. Priority Scheduling**
+- Preemptive: Process có priority cao hơn chạy trước
+- **Problem**: Priority inversion (low priority process holds lock needed by high priority)
+- **Solution**: Priority inheritance protocol
+
+**5. Multilevel Queue**
+- Nhiều queues với priorities khác nhau
+- **Example**: System processes (high priority) vs User processes (low priority)
+
+**6. Multilevel Feedback Queue**
+- Process có thể di chuyển giữa queues dựa trên behavior
+- **Example**: CPU-bound process → Move to lower priority queue
+- **Example**: I/O-bound process → Move to higher priority queue
+
+**Comparison:**
+
+| Algorithm | Response Time | Throughput | Fairness | Complexity |
+|-----------|--------------|------------|----------|------------|
+| **FCFS** | High | Medium | Fair | Low |
+| **SJF** | Low | High | Unfair | Medium |
+| **RR** | **Low** | Medium | **Fair** | Low |
+| **Priority** | Low | High | Unfair | Medium |
+| **MLFQ** | Low | High | Fair | High |
+
+**Best Practice:**
+- ✅ **Interactive systems**: Round Robin (good response time)
+- ✅ **Batch systems**: SJF (maximize throughput)
+- ✅ **Real-time systems**: Priority Scheduling (meet deadlines)
+
+#### Process Synchronization Solutions
+
+**1. Mutex Implementation (Binary Semaphore)**
+```c
+// Mutex operations
+void mutex_lock(mutex_t *mutex) {
+    while (atomic_test_and_set(&mutex->locked)) {
+        // Wait until mutex is unlocked
+        wait_queue_add(current_process, &mutex->waiters);
+        sleep();
+    }
+    mutex->owner = current_process;
+}
+
+void mutex_unlock(mutex_t *mutex) {
+    if (mutex->owner != current_process) {
+        error("Not owner");
+        return;
+    }
+    mutex->owner = NULL;
+    atomic_clear(&mutex->locked);
+    // Wake up waiting process
+    wait_queue_wake(&mutex->waiters);
+}
+```
+
+**2. Semaphore Implementation**
+```c
+// Counting semaphore
+typedef struct {
+    int count;
+    queue_t waiters;
+} semaphore_t;
+
+void sem_wait(semaphore_t *sem) {
+    while (atomic_decrement(&sem->count) < 0) {
+        // Count < 0 → Block
+        wait_queue_add(current_process, &sem->waiters);
+        sleep();
+    }
+}
+
+void sem_signal(semaphore_t *sem) {
+    if (atomic_increment(&sem->count) <= 0) {
+        // Count <= 0 → Wake up waiting process
+        wait_queue_wake(&sem->waiters);
+    }
+}
+```
+
+**3. Producer-Consumer Problem Solution**
+```c
+// Using semaphores
+semaphore_t empty = {BUFFER_SIZE, NULL};  // Empty slots
+semaphore_t full = {0, NULL};             // Full slots
+semaphore_t mutex = {1, NULL};            // Buffer access lock
+
+// Producer
+void producer() {
+    while (true) {
+        item = produce_item();
+        sem_wait(&empty);    // Wait for empty slot
+        sem_wait(&mutex);    // Lock buffer
+        buffer[in] = item;
+        in = (in + 1) % BUFFER_SIZE;
+        sem_signal(&mutex);  // Unlock buffer
+        sem_signal(&full);   // Signal full slot
+    }
+}
+
+// Consumer
+void consumer() {
+    while (true) {
+        sem_wait(&full);     // Wait for full slot
+        sem_wait(&mutex);    // Lock buffer
+        item = buffer[out];
+        out = (out + 1) % BUFFER_SIZE;
+        sem_signal(&mutex);  // Unlock buffer
+        sem_signal(&empty);  // Signal empty slot
+        consume_item(item);
+    }
+}
+```
+
+**4. Reader-Writer Problem Solution**
+```c
+// Readers can access simultaneously
+// Writers need exclusive access
+semaphore_t rw_mutex = {1, NULL};     // Lock for writers
+semaphore_t mutex = {1, NULL};        // Lock for read_count
+int read_count = 0;
+
+// Reader
+void reader() {
+    sem_wait(&mutex);
+    read_count++;
+    if (read_count == 1) {
+        sem_wait(&rw_mutex);  // First reader locks writer
+    }
+    sem_signal(&mutex);
+    
+    // Read data
+    
+    sem_wait(&mutex);
+    read_count--;
+    if (read_count == 0) {
+        sem_signal(&rw_mutex);  // Last reader unlocks writer
+    }
+    sem_signal(&mutex);
+}
+
+// Writer
+void writer() {
+    sem_wait(&rw_mutex);  // Exclusive lock
+    // Write data
+    sem_signal(&rw_mutex);
+}
+```
+
+#### Inter-Process Communication (IPC) Solutions
+
+**1. Message Passing**
+```c
+// Send/Receive messages
+int send(pid_t receiver, message_t *msg) {
+    // Copy message to receiver's mailbox
+    receiver->mailbox.enqueue(msg);
+    return 0;
+}
+
+int receive(pid_t sender, message_t *msg) {
+    // Wait for message from sender
+    while (mailbox.is_empty()) {
+        sleep();
+    }
+    *msg = mailbox.dequeue();
+    return 0;
+}
+```
+
+**2. Shared Memory**
+```c
+// Create shared memory segment
+int shm_id = shmget(IPC_PRIVATE, size, IPC_CREAT | 0666);
+void *shm_addr = shmat(shm_id, NULL, 0);
+
+// Process 1: Write
+strcpy(shm_addr, "Hello");
+
+// Process 2: Read
+printf("%s\n", shm_addr);
+
+// Cleanup
+shmdt(shm_addr);
+shmctl(shm_id, IPC_RMID, NULL);
+```
+
+**3. Named Pipes (FIFO)**
+```bash
+# Create named pipe
+mkfifo mypipe
+
+# Process 1: Write
+echo "Hello" > mypipe
+
+# Process 2: Read
+cat < mypipe
+```
+
+### 9.2. Memory Management Strategies
+
+#### Memory Allocation Strategies
+
+**1. First Fit**
+- Allocate first hole large enough
+- **Pros**: Fast
+- **Cons**: May waste memory (external fragmentation)
+
+**2. Best Fit**
+- Allocate smallest hole large enough
+- **Pros**: Minimize waste
+- **Cons**: Slow (need to search all holes), creates many small holes
+
+**3. Worst Fit**
+- Allocate largest hole
+- **Pros**: Leaves large hole for future
+- **Cons**: Worst memory utilization
+
+**4. Next Fit**
+- Similar to First Fit, but start from last allocated position
+- **Pros**: Faster than First Fit (don't always start from beginning)
+- **Cons**: May waste memory at beginning
+
+**Comparison:**
+
+| Strategy | Speed | Memory Utilization | External Fragmentation |
+|----------|-------|-------------------|----------------------|
+| **First Fit** | ✅ Fast | ⚠️ Medium | ⚠️ Medium |
+| **Best Fit** | ❌ Slow | ✅ Good | ❌ High |
+| **Worst Fit** | ⚠️ Medium | ❌ Poor | ⚠️ Medium |
+| **Next Fit** | ✅ Fast | ⚠️ Medium | ⚠️ Medium |
+
+**Best Practice:**
+- ✅ **Most systems**: First Fit (good balance)
+- ✅ **Embedded systems**: Best Fit (minimize waste)
+
+#### Virtual Memory Strategies
+
+**1. Paging (Fixed Size)**
+- Memory divided into fixed-size pages (4KB)
+- **Pros**: Simple, no external fragmentation
+- **Cons**: Internal fragmentation (last page may not be full)
+
+**2. Segmentation (Variable Size)**
+- Memory divided into variable-size segments (code, data, stack)
+- **Pros**: Logical structure, no internal fragmentation
+- **Cons**: External fragmentation, complex allocation
+
+**3. Segmented Paging (Hybrid)**
+- Combine segmentation and paging
+- **Pros**: Best of both worlds
+- **Cons**: Complex implementation
+
+**Page Replacement Algorithms:**
+
+**1. FIFO (First-In-First-Out)**
+- Replace oldest page
+- **Problem**: Belady's Anomaly (more frames → more page faults)
+- **Use Case**: Simple systems
+
+**2. LRU (Least Recently Used)**
+- Replace least recently used page
+- **Pros**: Good performance (temporal locality)
+- **Cons**: Expensive to implement (need to track access times)
+- **Use Case**: **Production systems** (recommended)
+
+**3. LFU (Least Frequently Used)**
+- Replace least frequently used page
+- **Pros**: Good for certain access patterns
+- **Cons**: May replace hot page if recently loaded
+
+**4. Optimal (OPT)**
+- Replace page that will be used farthest in future
+- **Pros**: Optimal (minimum page faults)
+- **Cons**: Impossible to implement (need to know future)
+- **Use Case**: Benchmark for other algorithms
+
+**5. Clock (Second Chance)**
+- Circular list of pages with reference bit
+- Replace page with reference bit = 0 (give second chance)
+- **Pros**: Approximates LRU, cheaper to implement
+- **Cons**: Less accurate than LRU
+
+**Comparison:**
+
+| Algorithm | Page Faults | Complexity | Use Case |
+|-----------|-------------|------------|----------|
+| **FIFO** | ⚠️ Medium | ✅ Low | Simple systems |
+| **LRU** | ✅ Low | ❌ High | **Production** (recommended) |
+| **LFU** | ⚠️ Medium | ❌ High | Specific patterns |
+| **OPT** | ✅ Optimal | ❌ Impossible | Benchmark |
+| **Clock** | ⚠️ Medium | ✅ Medium | Practical alternative |
+
+**Best Practice:**
+- ✅ **Production systems**: LRU or Clock (balance performance and cost)
+- ✅ **Embedded systems**: FIFO (simplicity)
+
+#### Memory Fragmentation Solutions
+
+**1. External Fragmentation**
+**Problem:** Free memory scattered in small chunks.
+
+**Solutions:**
+- **Compaction**: Move allocated pages to consolidate free space (expensive)
+- **Paging**: Fixed-size pages eliminate external fragmentation
+- **Segmentation with paging**: Hybrid approach
+
+**2. Internal Fragmentation**
+**Problem:** Allocated page not fully used.
+
+**Solutions:**
+- **Smaller page size**: Reduce waste (but increase overhead)
+- **Variable-size pages**: Complex but efficient
+- **Accept trade-off**: Internal fragmentation acceptable for simplicity
+
+### 9.3. Deadlock Prevention và Handling
+
+#### Deadlock Conditions (Coffman Conditions)
+
+**4 Conditions necessary for deadlock:**
+1. **Mutual Exclusion**: Resource cannot be shared
+2. **Hold and Wait**: Process holds resource while waiting for another
+3. **No Preemption**: Resource cannot be taken away
+4. **Circular Wait**: Circular chain of processes waiting for resources
+
+**If all 4 conditions exist → Deadlock is possible**
+**If any condition is prevented → Deadlock cannot occur**
+
+#### Deadlock Prevention Strategies
+
+**1. Prevent Mutual Exclusion**
+- Make resources shareable (not always possible)
+- **Example**: Read-only files can be shared, but write locks need mutual exclusion
+
+**2. Prevent Hold and Wait**
+- **Protocol 1**: Request all resources at once before starting
+  - **Problem**: Resource starvation (wait for all resources)
+  - **Problem**: Low resource utilization (hold unused resources)
+- **Protocol 2**: Release all resources before requesting new ones
+  - **Problem**: May need to restart work
+
+**3. Prevent No Preemption**
+- If process cannot get resource → Preempt (take away) resources it holds
+- **Example**: Preempt resources from waiting processes
+- **Problem**: May need to restart work
+
+**4. Prevent Circular Wait**
+- **Resource Ordering**: Assign order to all resources, request in order
+  - **Example**: All processes request lock1 before lock2
+  - **Pros**: Prevents circular wait (no cycle possible)
+  - **Cons**: May need to wait longer (cannot request out of order)
+
+**Code Example:**
+```java
+// ❌ BAD: Can cause deadlock
+public void transfer(Account from, Account to, BigDecimal amount) {
+    synchronized(from) {
+        synchronized(to) {  // Different threads may acquire in different order
+            from.withdraw(amount);
+            to.deposit(amount);
+        }
+    }
+}
+
+// ✅ GOOD: Resource ordering prevents circular wait
+public void transfer(Account from, Account to, BigDecimal amount) {
+    Account first = from.getId() < to.getId() ? from : to;
+    Account second = from.getId() < to.getId() ? to : from;
+    
+    synchronized(first) {
+        synchronized(second) {  // Always same order
+            from.withdraw(amount);
+            to.deposit(amount);
+        }
+    }
+}
+```
+
+#### Deadlock Avoidance (Banker's Algorithm)
+
+**Concept:** System maintains safe state (can satisfy all requests without deadlock).
+
+**Safe State:**
+- System can allocate resources to all processes in some order
+- All processes can complete execution
+
+**Banker's Algorithm:**
+```c
+// Check if state is safe
+bool is_safe_state() {
+    int work[RESOURCES];
+    bool finish[PROCESSES];
+    
+    // Initialize
+    for (int i = 0; i < RESOURCES; i++) {
+        work[i] = available[i];
+    }
+    for (int i = 0; i < PROCESSES; i++) {
+        finish[i] = false;
+    }
+    
+    // Find process that can finish
+    bool found = true;
+    while (found) {
+        found = false;
+        for (int i = 0; i < PROCESSES; i++) {
+            if (!finish[i]) {
+                bool can_finish = true;
+                for (int j = 0; j < RESOURCES; j++) {
+                    if (need[i][j] > work[j]) {
+                        can_finish = false;
+                        break;
+                    }
+                }
+                if (can_finish) {
+                    // Process can finish
+                    for (int j = 0; j < RESOURCES; j++) {
+                        work[j] += allocation[i][j];
+                    }
+                    finish[i] = true;
+                    found = true;
+                }
+            }
+        }
+    }
+    
+    // Check if all processes finished
+    for (int i = 0; i < PROCESSES; i++) {
+        if (!finish[i]) {
+            return false;  // Not safe
+        }
+    }
+    return true;  // Safe
+}
+```
+
+**Request Allocation:**
+```c
+// Grant request only if safe
+bool request_resources(int process, int request[]) {
+    // Check if request <= need
+    for (int i = 0; i < RESOURCES; i++) {
+        if (request[i] > need[process][i]) {
+            return false;  // Invalid request
+        }
+    }
+    
+    // Check if request <= available
+    for (int i = 0; i < RESOURCES; i++) {
+        if (request[i] > available[i]) {
+            return false;  // Must wait
+        }
+    }
+    
+    // Try allocation
+    for (int i = 0; i < RESOURCES; i++) {
+        available[i] -= request[i];
+        allocation[process][i] += request[i];
+        need[process][i] -= request[i];
+    }
+    
+    // Check if state is safe
+    if (is_safe_state()) {
+        return true;  // Safe, grant request
+    } else {
+        // Not safe, rollback
+        for (int i = 0; i < RESOURCES; i++) {
+            available[i] += request[i];
+            allocation[process][i] -= request[i];
+            need[process][i] += request[i];
+        }
+        return false;  // Must wait
+    }
+}
+```
+
+**Pros:**
+- ✅ Prevents deadlock (only grants requests that maintain safe state)
+- ✅ Maximizes resource utilization (grants requests when safe)
+
+**Cons:**
+- ❌ Requires advance knowledge of maximum resource needs
+- ❌ Expensive (need to check safety for every request)
+- ❌ Processes may wait even when resources available
+
+#### Deadlock Detection
+
+**If deadlock prevention/avoidance not used, need detection:**
+
+**1. Resource Allocation Graph**
+```
+Processes: Circles
+Resources: Rectangles
+Request: P → R (arrow from process to resource)
+Allocation: R → P (arrow from resource to process)
+```
+
+**Deadlock exists if graph contains cycle.**
+
+**2. Detection Algorithm**
+```c
+// Detection algorithm
+bool detect_deadlock() {
+    int work[RESOURCES];
+    bool finish[PROCESSES];
+    
+    // Initialize
+    for (int i = 0; i < RESOURCES; i++) {
+        work[i] = available[i];
+    }
+    for (int i = 0; i < PROCESSES; i++) {
+        finish[i] = (allocation[i] == 0);  // Finished if no allocation
+    }
+    
+    // Find process that can finish
+    bool found = true;
+    while (found) {
+        found = false;
+        for (int i = 0; i < PROCESSES; i++) {
+            if (!finish[i]) {
+                bool can_finish = true;
+                for (int j = 0; j < RESOURCES; j++) {
+                    if (request[i][j] > work[j]) {
+                        can_finish = false;
+                        break;
+                    }
+                }
+                if (can_finish) {
+                    // Process can finish, release resources
+                    for (int j = 0; j < RESOURCES; j++) {
+                        work[j] += allocation[i][j];
+                    }
+                    finish[i] = true;
+                    found = true;
+                }
+            }
+        }
+    }
+    
+    // Check for deadlock
+    for (int i = 0; i < PROCESSES; i++) {
+        if (!finish[i]) {
+            return true;  // Deadlock detected
+        }
+    }
+    return false;  // No deadlock
+}
+```
+
+**3. Recovery from Deadlock**
+
+**Process Termination:**
+- **Abort all deadlocked processes**: Simple but loses all work
+- **Abort one process at a time**: Check if deadlock resolved, repeat if not
+- **Cost-based selection**: Abort process with minimum cost (priority, resources held)
+
+**Resource Preemption:**
+- **Preempt resources from deadlocked processes**
+- **Rollback**: Restore process to safe state before deadlock
+- **Starvation**: Ensure same process not always preempted
+
+**Best Practice:**
+- ✅ **Prevention**: Use resource ordering (prevent circular wait)
+- ✅ **Avoidance**: Use Banker's algorithm (if advance knowledge available)
+- ✅ **Detection**: Use detection algorithm (if prevention/avoidance not possible)
+- ✅ **Recovery**: Minimize cost (abort lowest priority processes first)
+
+---
+
 *Kết thúc Phần 1.3: Hệ Điều hành*

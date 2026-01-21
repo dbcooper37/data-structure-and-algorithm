@@ -1590,5 +1590,1059 @@ Ví dụ: N=4, F=1 → 4 ≥ 3×1 + 1 = 4 ✅
 
 ---
 
+## 6.7. Advanced Distributed Systems & Production Solutions
+
+### 6.7.1. CAP Theorem Production Scenarios Chi tiết
+
+#### Scenario 1: Banking Transaction (CP Required)
+
+**Architecture:**
+```
+Client → API Gateway → Payment Service
+                      ↓
+              ZooKeeper Cluster (5 nodes)
+                      ↓
+              Distributed Lock
+                      ↓
+              Database (Master-Slave)
+```
+
+**Flow với ZooKeeper Distributed Lock:**
+```java
+@Service
+public class PaymentService {
+    @Autowired
+    private ZooKeeper zk;
+    
+    public void transfer(Long fromAccount, Long toAccount, BigDecimal amount) {
+        // 1. Acquire distributed lock (CP guarantee)
+        String lockPath = "/locks/transfer/" + fromAccount + "-" + toAccount;
+        String lockNode = zk.create(lockPath + "/", null, 
+            ZooDefs.Ids.OPEN_ACL_UNSAFE, 
+            CreateMode.EPHEMERAL_SEQUENTIAL);
+        
+        try {
+            // 2. Wait for lock acquisition
+            waitForLock(lockPath, lockNode);
+            
+            // 3. Execute transfer (critical section)
+            accountService.deduct(fromAccount, amount);
+            accountService.add(toAccount, amount);
+            
+        } finally {
+            // 4. Release lock
+            zk.delete(lockNode, -1);
+        }
+    }
+}
+```
+
+**Failure Handling (Reject Writes When No Quorum):**
+```java
+public void transfer(Long fromAccount, Long toAccount, BigDecimal amount) {
+    // Check quorum before acquiring lock
+    List<String> liveNodes = zk.getChildren("/zookeeper/quorum", false);
+    int quorum = totalNodes / 2 + 1;
+    
+    if (liveNodes.size() < quorum) {
+        // No quorum → Reject write
+        throw new QuorumException("Insufficient quorum. Cannot guarantee consistency.");
+    }
+    
+    // Proceed with lock acquisition and transfer
+    // ...
+}
+```
+
+**Result:**
+- ✅ **Consistency**: Guaranteed (only majority partition accepts writes)
+- ❌ **Availability**: Reduced (minority partition rejects writes)
+- ✅ **Partition Tolerance**: Handled (quorum-based)
+
+#### Scenario 2: Social Media Feed (AP Preferred)
+
+**Architecture:**
+```
+Users → API Gateway → Feed Service
+                      ↓
+              Cassandra Multi-DC
+              ├─ US-East (3 nodes)
+              ├─ EU-West (3 nodes)
+              └─ Asia-Pacific (3 nodes)
+```
+
+**Cassandra Multi-DC Setup:**
+```yaml
+# cassandra.yaml
+cluster_name: 'SocialNetwork'
+endpoint_snitch: GossipingPropertyFileSnitch
+
+# Datacenter 1: US-East
+datacenter1:
+  seeds: "192.168.1.10,192.168.1.11"
+  replication_factor: 3
+
+# Datacenter 2: EU-West  
+datacenter2:
+  seeds: "192.168.2.10,192.168.2.11"
+  replication_factor: 3
+```
+
+**Conflict Resolution Strategies:**
+
+**1. Last-Write-Wins (LWW):**
+```java
+// Cassandra automatically resolves by timestamp
+// T1: US user posts at timestamp T1
+// T2: EU user posts at timestamp T2 (T2 > T1)
+// → T2 wins (last write wins)
+```
+
+**2. CRDT (Conflict-Free Replicated Data Types):**
+```java
+// Vector Clock for causal ordering
+class Post {
+    Map<String, Long> vectorClock; // {US: 5, EU: 3}
+    String content;
+    LocalDateTime timestamp;
+}
+
+// Merge posts from multiple DCs
+public List<Post> mergePosts(List<Post> usPosts, List<Post> euPosts) {
+    // Merge based on vector clock causality
+    // If US.post.vectorClock > EU.post.vectorClock → US wins
+    // Otherwise → EU wins
+    return mergedPosts;
+}
+```
+
+**Eventual Consistency Window Analysis:**
+```
+DC1 write → Replication → DC2 read
+Time: T0 → T1 → T2 (replication delay: 100-500ms)
+
+Consistency Window: 100-500ms
+- Within window: May read stale data
+- After window: Data consistent
+```
+
+#### Scenario 3: E-commerce Catalog (AP with Consistency Tuning)
+
+**Architecture:**
+```
+Users → API Gateway → Catalog Service
+                      ↓
+              Redis Cluster
+              ├─ Master (US-East)
+              └─ Replicas (EU-West, Asia)
+```
+
+**Redis Master-Slave + Sentinel:**
+```conf
+# redis-sentinel.conf
+sentinel monitor mymaster 192.168.1.10 6379 2
+sentinel down-after-milliseconds mymaster 5000
+sentinel failover-timeout mymaster 60000
+```
+
+**Read-Your-Writes Consistency:**
+```java
+@Service
+public class CatalogService {
+    @Autowired
+    private RedisTemplate<String, Product> redis;
+    
+    public void updateProduct(Long productId, Product product) {
+        // 1. Write to master
+        redis.opsForValue().set("product:" + productId, product);
+        
+        // 2. Wait for replication (read-your-writes)
+        String sessionId = getCurrentSessionId();
+        redis.opsForValue().set("write:" + sessionId + ":" + productId, 
+            System.currentTimeMillis(), 5, TimeUnit.MINUTES);
+    }
+    
+    public Product getProduct(Long productId) {
+        String sessionId = getCurrentSessionId();
+        Long writeTime = redis.opsForValue().get("write:" + sessionId + ":" + productId);
+        
+        if (writeTime != null) {
+            // User recently wrote → Read from master (strong consistency)
+            return readFromMaster(productId);
+        } else {
+            // User didn't write → Read from replica (eventual consistency OK)
+            return readFromReplica(productId);
+        }
+    }
+}
+```
+
+**Session Stickiness:**
+```java
+// Ensure same user always connects to same Redis instance
+public String getRedisInstance(Long userId) {
+    // Consistent hashing: Same user → Same Redis instance
+    return redisInstances.get(userId % redisInstances.size());
+}
+```
+
+### 6.7.2. Distributed Lock Troubleshooting
+
+#### Problem 1: Redis Lock Timeout Too Short
+
+**Symptom:** Duplicate processing (2 clients run same task).
+
+**Root Cause:**
+```java
+// Lock expires before task completes
+RLock lock = redisson.getLock("task:123");
+lock.lock(10, TimeUnit.SECONDS);  // 10s timeout
+
+// Task takes 15 seconds → Lock expires at 10s
+// Another client acquires lock at 11s → Both run task!
+```
+
+**Solution: Redisson Watchdog Mechanism**
+```java
+// Redisson automatically extends lock if task still running
+RLock lock = redisson.getLock("task:123");
+
+// Lock with lease time (auto-renewal if task running)
+lock.lock(30, TimeUnit.SECONDS);
+// Redisson starts watchdog thread
+// → Renews lock every 10s (leaseTime / 3)
+// → Releases lock when task completes
+
+try {
+    // Long-running task
+    processTask(taskId);  // May take 60 seconds
+    
+} finally {
+    lock.unlock();  // Watchdog stops, lock released
+}
+```
+
+**Configuration:**
+```java
+Config config = new Config();
+config.setLockWatchdogTimeout(30000);  // Default: 30s
+RedissonClient redisson = Redisson.create(config);
+```
+
+#### Problem 2: ZooKeeper Session Timeout
+
+**Symptom:** Temporary node deleted → Lock lost even though client alive.
+
+**Root Cause:**
+```java
+// ZooKeeper session timeout (default: 40s)
+// If client cannot send heartbeat → Session expires → Ephemeral node deleted
+
+// Scenario:
+// T=0: Client acquires lock (ephemeral node created)
+// T=10s: Network hiccup → No heartbeat sent
+// T=40s: Session expires → Ephemeral node deleted → Lock lost!
+// T=41s: Another client acquires lock (thinks first client crashed)
+```
+
+**Solution: Heartbeat Tuning**
+```java
+// Increase session timeout
+ZooKeeper zk = new ZooKeeper(connectString, 
+    60000,  // Session timeout: 60s (longer)
+    watcher);
+
+// Send heartbeat explicitly
+ScheduledExecutorService heartbeatService = Executors.newScheduledThreadPool(1);
+heartbeatService.scheduleAtFixedRate(() -> {
+    try {
+        zk.exists("/heartbeat", false);  // Send heartbeat
+    } catch (Exception e) {
+        log.error("Heartbeat failed", e);
+    }
+}, 0, 30, TimeUnit.SECONDS);  // Every 30s (half of session timeout)
+```
+
+**Session Timeout Calculation:**
+```
+Session Timeout = 2 × Network RTT + Processing Time + Safety Margin
+
+Example:
+- Network RTT: 10ms
+- Processing Time: 100ms
+- Safety Margin: 1000ms
+- Session Timeout = 2 × 10 + 100 + 1000 = 1120ms ≈ 2000ms (minimum)
+- Recommended: 4000-6000ms
+```
+
+#### Problem 3: Lock Not Released (Deadlock)
+
+**Symptom:** All requests blocked (no one can acquire lock).
+
+**Root Cause:**
+```java
+// Client crashes before releasing lock
+// → Lock never released → All other clients blocked
+```
+
+**Detection: Monitor Lock Age**
+```java
+@Component
+public class LockMonitor {
+    @Scheduled(fixedRate = 10000)  // Every 10s
+    public void monitorLocks() {
+        // Check all locks
+        Set<String> locks = redis.keys("lock:*");
+        
+        for (String lockKey : locks) {
+            Long lockAge = redis.ttl(lockKey);
+            if (lockAge == -1) {  // No TTL (permanent lock - BAD!)
+                log.warn("Lock without TTL detected: {}", lockKey);
+                // Force release after timeout
+                releaseLockIfStale(lockKey);
+            }
+            
+            // Check lock age
+            Long lockTimestamp = redis.get("lock:" + lockKey + ":timestamp");
+            if (lockTimestamp != null && System.currentTimeMillis() - lockTimestamp > 300000) {
+                // Lock held for > 5 minutes → Suspect deadlock
+                log.error("Long-held lock detected: {} (age: {}ms)", 
+                    lockKey, System.currentTimeMillis() - lockTimestamp);
+            }
+        }
+    }
+}
+```
+
+**Prevention: Timeout + Cleanup Job**
+```java
+@Service
+public class SafeDistributedLock {
+    private static final long LOCK_TIMEOUT = 30000;  // 30s max
+    
+    public boolean tryLock(String resource, long timeout, TimeUnit unit) {
+        String lockKey = "lock:" + resource;
+        long lockId = System.currentTimeMillis();
+        
+        // Acquire lock with TTL
+        boolean acquired = redis.setIfAbsent(lockKey, lockId, 
+            Duration.ofMillis(LOCK_TIMEOUT));
+        
+        if (acquired) {
+            // Start watchdog to extend lock
+            startWatchdog(lockKey, lockId);
+            return true;
+        }
+        
+        // Check if lock is stale
+        Long lockAge = redis.pttl(lockKey);
+        if (lockAge == -1 || lockAge == -2) {
+            // No TTL or expired → Force acquire
+            return forceAcquire(lockKey, lockId);
+        }
+        
+        return false;
+    }
+    
+    @Scheduled(fixedRate = 10000)
+    public void cleanupStaleLocks() {
+        // Find locks without heartbeat
+        Set<String> locks = redis.keys("lock:*");
+        for (String lockKey : locks) {
+            Long heartbeat = redis.get("heartbeat:" + lockKey);
+            if (heartbeat == null || 
+                System.currentTimeMillis() - heartbeat > 60000) {
+                // No heartbeat for 60s → Stale lock → Force release
+                redis.delete(lockKey);
+                log.warn("Released stale lock: {}", lockKey);
+            }
+        }
+    }
+}
+```
+
+### 6.7.3. Distributed Transaction Patterns Chi tiết
+
+#### TCC Implementation Guide
+
+**TCC = Try-Confirm-Cancel**
+
+**1. Try Phase: Reserve Resources**
+```java
+@Service
+public class OrderTccService {
+    @TCC
+    @Transactional
+    public OrderTryResult tryCreateOrder(Order order) {
+        // Try: Reserve resources (don't commit yet)
+        
+        // Reserve inventory
+        InventoryReservation inventoryReservation = inventoryService.reserve(
+            order.getProductId(), order.getQuantity());
+        
+        // Reserve balance
+        BalanceReservation balanceReservation = accountService.reserve(
+            order.getUserId(), order.getAmount());
+        
+        // Create order (status = TRYING)
+        Order orderEntity = new Order();
+        orderEntity.setOrderId(order.getOrderId());
+        orderEntity.setStatus("TRYING");
+        orderEntity.setInventoryReservationId(inventoryReservation.getId());
+        orderEntity.setBalanceReservationId(balanceReservation.getId());
+        orderRepository.save(orderEntity);
+        
+        // Log transaction (for idempotency)
+        TransactionLog log = new TransactionLog();
+        log.setTransactionId(order.getTransactionId());
+        log.setStatus("TRY");
+        log.setOrderId(order.getOrderId());
+        transactionLogRepository.save(log);
+        
+        return new OrderTryResult(orderEntity.getOrderId());
+    }
+}
+```
+
+**2. Confirm Phase: Execute Business Logic**
+```java
+@Transactional
+public boolean confirmCreateOrder(Long orderId) {
+    // Check idempotency
+    TransactionLog log = transactionLogRepository
+        .findByTransactionIdAndStatus(transactionId, "CONFIRM");
+    if (log != null) {
+        return true;  // Already confirmed
+    }
+    
+    // Get order
+    Order order = orderRepository.findById(orderId).orElseThrow();
+    if (!"TRYING".equals(order.getStatus())) {
+        throw new IllegalStateException("Order not in TRYING state");
+    }
+    
+    // Confirm: Execute business logic
+    inventoryService.confirm(order.getInventoryReservationId());
+    accountService.confirm(order.getBalanceReservationId());
+    
+    // Update order status
+    order.setStatus("CONFIRMED");
+    orderRepository.save(order);
+    
+    // Log confirmation
+    TransactionLog confirmLog = new TransactionLog();
+    confirmLog.setTransactionId(transactionId);
+    confirmLog.setStatus("CONFIRM");
+    transactionLogRepository.save(confirmLog);
+    
+    return true;
+}
+```
+
+**3. Cancel Phase: Rollback**
+```java
+@Transactional
+public boolean cancelCreateOrder(Long orderId) {
+    // Check idempotency
+    TransactionLog log = transactionLogRepository
+        .findByTransactionIdAndStatus(transactionId, "CANCEL");
+    if (log != null) {
+        return true;  // Already cancelled
+    }
+    
+    // Get order
+    Order order = orderRepository.findById(orderId).orElseThrow();
+    
+    // Cancel: Rollback
+    inventoryService.cancel(order.getInventoryReservationId());
+    accountService.cancel(order.getBalanceReservationId());
+    
+    // Update order status
+    order.setStatus("CANCELLED");
+    orderRepository.save(order);
+    
+    // Log cancellation
+    TransactionLog cancelLog = new TransactionLog();
+    cancelLog.setTransactionId(transactionId);
+    cancelLog.setStatus("CANCEL");
+    transactionLogRepository.save(cancelLog);
+    
+    return true;
+}
+```
+
+**4. Idempotency Handling (Transaction Log Table)**
+```sql
+CREATE TABLE transaction_log (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    transaction_id VARCHAR(64) UNIQUE NOT NULL,
+    order_id BIGINT,
+    status VARCHAR(20) NOT NULL,  -- TRY, CONFIRM, CANCEL
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    INDEX idx_transaction_id (transaction_id),
+    INDEX idx_order_id (order_id)
+);
+```
+
+**5. ByteTCC Framework Integration**
+
+**Configuration:**
+```xml
+<!-- pom.xml -->
+<dependency>
+    <groupId>org.bytesoft</groupId>
+    <artifactId>bytetcc-supports-springcloud</artifactId>
+    <version>0.5.0</version>
+</dependency>
+```
+
+**Service Implementation:**
+```java
+@Service("orderTccService")
+public class OrderTccServiceImpl implements OrderTccService {
+    
+    @Compensable(
+        confirmableKey = "orderTccServiceConfirm",
+        cancellableKey = "orderTccServiceCancel"
+    )
+    @Transactional
+    public OrderTryResult tryCreateOrder(Order order) {
+        // Try phase
+        // ...
+    }
+    
+    @Transactional
+    public void confirmCreateOrder(Order order) {
+        // Confirm phase
+        // ...
+    }
+    
+    @Transactional
+    public void cancelCreateOrder(Order order) {
+        // Cancel phase
+        // ...
+    }
+}
+```
+
+#### Local Message Table Pattern Chi tiết
+
+**Database Schema Design:**
+```sql
+CREATE TABLE outbox_messages (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    message_id VARCHAR(64) UNIQUE NOT NULL,
+    topic VARCHAR(100) NOT NULL,
+    payload TEXT NOT NULL,
+    status VARCHAR(20) NOT NULL,  -- PENDING, SENT, FAILED
+    retry_count INT DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    
+    INDEX idx_status_created (status, created_at),
+    INDEX idx_message_id (message_id)
+);
+```
+
+**Producer Code (Transactional Outbox):**
+```java
+@Service
+public class OrderService {
+    @Autowired
+    private OrderRepository orderRepository;
+    @Autowired
+    private OutboxMessageRepository outboxRepository;
+    
+    @Transactional
+    public void createOrder(Order order) {
+        // 1. Create order in local DB
+        Order savedOrder = orderRepository.save(order);
+        
+        // 2. Insert message to outbox (same transaction)
+        OutboxMessage message = new OutboxMessage();
+        message.setMessageId(UUID.randomUUID().toString());
+        message.setTopic("order-created");
+        message.setPayload(JSON.toJSONString(savedOrder));
+        message.setStatus("PENDING");
+        outboxRepository.save(message);
+        
+        // Both saved in same transaction → Atomic guarantee
+    }
+}
+```
+
+**Consumer Code (Idempotent Processing):**
+```java
+@KafkaListener(topics = "order-created")
+public void handleOrderCreated(OrderCreatedEvent event) {
+    String messageId = event.getMessageId();
+    
+    // Check idempotency
+    ProcessedMessage processed = processedMessageRepository
+        .findByMessageId(messageId);
+    if (processed != null) {
+        log.info("Message already processed: {}", messageId);
+        return;  // Skip duplicate
+    }
+    
+    // Process message
+    try {
+        orderService.processOrder(event.getOrder());
+        
+        // Mark as processed
+        ProcessedMessage record = new ProcessedMessage();
+        record.setMessageId(messageId);
+        record.setProcessedAt(LocalDateTime.now());
+        processedMessageRepository.save(record);
+        
+    } catch (Exception e) {
+        log.error("Failed to process message", e);
+        throw e;  // Will be redelivered by Kafka
+    }
+}
+```
+
+**Message Polling Job:**
+```java
+@Component
+public class OutboxPoller {
+    @Autowired
+    private OutboxMessageRepository outboxRepository;
+    @Autowired
+    private KafkaTemplate<String, String> kafka;
+    
+    @Scheduled(fixedRate = 1000)  // Poll every 1s
+    public void pollAndPublish() {
+        // Get pending messages
+        List<OutboxMessage> messages = outboxRepository
+            .findByStatusOrderByCreatedAtAsc("PENDING", PageRequest.of(0, 100));
+        
+        for (OutboxMessage message : messages) {
+            try {
+                // Publish to Kafka
+                kafka.send(message.getTopic(), message.getPayload())
+                    .addCallback(
+                        result -> {
+                            // Success → Update status
+                            message.setStatus("SENT");
+                            outboxRepository.save(message);
+                        },
+                        failure -> {
+                            // Failure → Retry
+                            message.setRetryCount(message.getRetryCount() + 1);
+                            if (message.getRetryCount() > 10) {
+                                message.setStatus("FAILED");
+                            }
+                            outboxRepository.save(message);
+                        }
+                    );
+                    
+            } catch (Exception e) {
+                log.error("Failed to publish message", e);
+                message.setRetryCount(message.getRetryCount() + 1);
+                outboxRepository.save(message);
+            }
+        }
+    }
+}
+```
+
+**At-Least-Once Guarantee Proof:**
+```
+1. Order created + Message inserted (atomic transaction)
+   → Both committed or both rolled back
+
+2. Polling job publishes message to Kafka
+   → If publish fails → Message remains PENDING → Will retry
+   → If publish succeeds → Message marked SENT → Won't retry
+
+3. Consumer processes message
+   → If processing fails → Kafka redelivers → Consumer processes again
+   → Idempotency check prevents duplicate processing
+
+4. Result: At-least-once guarantee
+   - Message may be delivered multiple times (network retry)
+   - But processing is idempotent → No duplicate side effects
+```
+
+#### Saga Pattern (Seata) Chi tiết
+
+**State Machine Definition:**
+```java
+public enum OrderSagaState {
+    INITIAL,
+    INVENTORY_RESERVED,
+    PAYMENT_PROCESSED,
+    SHIPPING_CREATED,
+    COMPLETED,
+    
+    // Compensation states
+    PAYMENT_ROLLED_BACK,
+    INVENTORY_RELEASED,
+    CANCELLED
+}
+
+public class OrderSaga {
+    private Long orderId;
+    private OrderSagaState state;
+    private Map<String, Object> context;
+}
+```
+
+**Compensation Logic Design:**
+```java
+@Service
+public class OrderSagaService {
+    @SagaStart
+    @Transactional
+    public void startOrderSaga(Order order) {
+        // Step 1: Reserve inventory
+        try {
+            inventoryService.reserve(order.getProductId(), order.getQuantity());
+            saga.setState(OrderSagaState.INVENTORY_RESERVED);
+        } catch (Exception e) {
+            saga.setState(OrderSagaState.CANCELLED);
+            throw e;
+        }
+        
+        // Step 2: Process payment
+        try {
+            paymentService.process(order.getUserId(), order.getAmount());
+            saga.setState(OrderSagaState.PAYMENT_PROCESSED);
+        } catch (Exception e) {
+            // Compensate: Release inventory
+            inventoryService.release(order.getProductId(), order.getQuantity());
+            saga.setState(OrderSagaState.INVENTORY_RELEASED);
+            saga.setState(OrderSagaState.CANCELLED);
+            throw e;
+        }
+        
+        // Step 3: Create shipping
+        try {
+            shippingService.create(order);
+            saga.setState(OrderSagaState.SHIPPING_CREATED);
+            saga.setState(OrderSagaState.COMPLETED);
+        } catch (Exception e) {
+            // Compensate: Rollback payment
+            paymentService.rollback(order.getUserId(), order.getAmount());
+            saga.setState(OrderSagaState.PAYMENT_ROLLED_BACK);
+            
+            // Compensate: Release inventory
+            inventoryService.release(order.getProductId(), order.getQuantity());
+            saga.setState(OrderSagaState.INVENTORY_RELEASED);
+            saga.setState(OrderSagaState.CANCELLED);
+            throw e;
+        }
+    }
+}
+```
+
+**Seata Configuration:**
+```yaml
+# application.yml
+seata:
+  enabled: true
+  application-id: order-service
+  tx-service-group: my_test_tx_group
+  config:
+    type: nacos
+    nacos:
+      server-addr: localhost:8848
+      group: SEATA_GROUP
+  registry:
+    type: nacos
+    nacos:
+      application: seata-server
+      server-addr: localhost:8848
+      group: SEATA_GROUP
+```
+
+**Rollback vs Forward Recovery:**
+
+| Strategy | Description | Use Case |
+| --- | --- | --- |
+| **Rollback (Compensating)** | Undo completed steps | When later step fails |
+| **Forward Recovery (Retry)** | Retry failed step | Transient failures |
+| **Both** | Retry first, rollback if retry fails | Production (recommended) |
+
+### 6.7.4. Distributed ID Generation Comparison
+
+#### Comparison Table
+
+| Solution | Performance | Ordering | Complexity | Use Case |
+|----------|-------------|----------|------------|----------|
+| **UUID** | ✅ High (local generation) | ❌ No (random) | ✅ Low | Logs, Temp IDs, External systems |
+| **Snowflake** | ✅✅ Very High (64-bit, 4096 IDs/s) | ✅ Yes (time-ordered) | ⚠️ Medium | **Primary keys** (recommended) |
+| **DB Sequence** | ⚠️ Medium (DB bottleneck) | ✅ Yes | ✅ Low | Small scale (< 1000 req/s) |
+| **Redis INCR** | ✅ High (Redis fast) | ✅ Yes | ⚠️ Medium | Middle scale (< 10k req/s) |
+| **Leaf (Meituan)** | ✅✅ Very High (local cache) | ✅ Yes | ⚠️ Medium-High | Ultra-high scale (100k+ req/s) |
+
+#### Snowflake Clock Sync Problem
+
+**Problem:** Server clock rolls back → Generate duplicate IDs.
+
+**Scenario:**
+```
+T1: Server time = 1000, generate ID with timestamp = 1000
+T2: Server clock rolls back → Time = 900
+T3: Generate ID with timestamp = 900 (earlier than T1's ID!)
+→ Duplicate ID possible!
+```
+
+**Solution 1: NTP Synchronization**
+```bash
+# Use NTP to sync system clock
+sudo ntpdate -s time.nist.gov
+sudo systemctl enable ntpd
+
+# Monitor clock drift
+ntpq -p
+```
+
+**Solution 2: Clock Rollback Detection**
+```java
+public class SnowflakeIdGenerator {
+    private long lastTimestamp = -1L;
+    private long sequence = 0L;
+    
+    public synchronized long nextId() {
+        long timestamp = timeGen();
+        
+        // Check clock rollback
+        if (timestamp < lastTimestamp) {
+            long offset = lastTimestamp - timestamp;
+            if (offset <= 5) {
+                // Small rollback → Wait for clock catchup
+                timestamp = tilNextMillis(lastTimestamp);
+            } else {
+                // Large rollback → Throw exception
+                throw new ClockBackwardsException(
+                    "Clock moved backwards. Refusing to generate id");
+            }
+        }
+        
+        // Generate ID
+        if (timestamp == lastTimestamp) {
+            sequence = (sequence + 1) & sequenceMask;
+            if (sequence == 0) {
+                timestamp = tilNextMillis(lastTimestamp);
+            }
+        } else {
+            sequence = 0L;
+        }
+        
+        lastTimestamp = timestamp;
+        
+        return ((timestamp - epoch) << timestampLeftShift) |
+               (datacenterId << datacenterIdShift) |
+               (machineId << machineIdShift) |
+               sequence;
+    }
+    
+    private long tilNextMillis(long lastTimestamp) {
+        long timestamp = timeGen();
+        while (timestamp <= lastTimestamp) {
+            timestamp = timeGen();
+        }
+        return timestamp;
+    }
+}
+```
+
+**Solution 3: Wait for Clock Catchup**
+```java
+private long tilNextMillis(long lastTimestamp) {
+    long timestamp = timeGen();
+    long maxWait = 100;  // Max wait 100ms
+    
+    while (timestamp <= lastTimestamp && maxWait > 0) {
+        Thread.sleep(1);
+        timestamp = timeGen();
+        maxWait--;
+    }
+    
+    if (timestamp <= lastTimestamp) {
+        throw new ClockBackwardsException("Clock rollback too large");
+    }
+    
+    return timestamp;
+}
+```
+
+### 6.7.5. RPC Framework (Dubbo) Troubleshooting
+
+#### Problem 1: Provider Not Registered
+
+**Symptom:** Consumer cannot find provider → Connection refused.
+
+**Diagnosis:**
+```bash
+# 1. Check ZooKeeper registration
+zkCli.sh -server localhost:2181
+ls /dubbo/com.example.service.UserService/providers
+# Should see provider URLs
+
+# 2. Network connectivity test
+telnet provider-host 20880
+# Should connect successfully
+
+# 3. Check firewall rules
+iptables -L | grep 20880
+# Should allow port 20880
+```
+
+**Common Causes:**
+1. **ZooKeeper not running**
+2. **Network connectivity issue**
+3. **Firewall blocking port 20880**
+4. **Provider service not started**
+
+**Solution:**
+```java
+// Provider configuration
+@DubboService(version = "1.0.0")
+@Service
+public class UserServiceImpl implements UserService {
+    // Service implementation
+}
+
+// Check registration status
+@Autowired
+private RegistryService registryService;
+
+public void checkRegistration() {
+    List<URL> providers = registryService.lookup(
+        "com.example.service.UserService");
+    if (providers.isEmpty()) {
+        log.error("No providers registered!");
+    }
+}
+```
+
+#### Problem 2: Timeout Tuning
+
+**Symptom:** `RpcException: Invoke remote method timeout`.
+
+**Root Cause:** Default timeout too short for slow operations.
+
+**Solution: Timeout Configuration Levels**
+```yaml
+# application.yml
+
+# 1. Global timeout (default for all services)
+dubbo:
+  consumer:
+    timeout: 3000  # 3 seconds (default)
+  
+  # 2. Service-level timeout
+  consumer:
+    services:
+      userService:
+        timeout: 5000  # 5 seconds for UserService
+  
+  # 3. Method-level timeout (in provider)
+  provider:
+    services:
+      userService:
+        methods:
+          - name: queryUser
+            timeout: 10000  # 10 seconds for queryUser method
+```
+
+**Best Practice: Measure Business Logic Time**
+```java
+@Service
+public class UserService {
+    public User queryUser(Long userId) {
+        long startTime = System.currentTimeMillis();
+        
+        try {
+            // Business logic
+            User user = userRepository.findById(userId);
+            // Complex calculation...
+            
+            return user;
+        } finally {
+            long duration = System.currentTimeMillis() - startTime;
+            log.info("queryUser took {}ms", duration);
+            
+            // Set timeout to 2x of p99 latency
+            // If p99 = 2000ms → Set timeout = 4000ms
+        }
+    }
+}
+```
+
+**Timeout Configuration Priority:**
+```
+Method-level > Service-level > Global default
+```
+
+#### Problem 3: Load Balancing Imbalance
+
+**Symptom:** One provider receives most requests, others idle.
+
+**Root Cause:** Default load balancing strategy (Random/RoundRobin) may not consider actual load.
+
+**Solution: Switch to LeastActive Strategy**
+```yaml
+dubbo:
+  consumer:
+    loadbalance: leastactive  # Use least active connections
+```
+
+**Monitor Active Connection Count:**
+```java
+@Component
+public class LoadBalanceMonitor {
+    @Autowired
+    private LoadBalance loadBalance;
+    
+    @Scheduled(fixedRate = 5000)
+    public void monitorLoad() {
+        // Check active connections per provider
+        Map<String, Integer> activeConnections = getActiveConnections();
+        
+        for (Map.Entry<String, Integer> entry : activeConnections.entrySet()) {
+            if (entry.getValue() > 100) {  // Threshold
+                log.warn("Provider {} has {} active connections (overloaded)", 
+                    entry.getKey(), entry.getValue());
+            }
+        }
+    }
+}
+```
+
+**Alternative: Weight-based Load Balancing**
+```yaml
+dubbo:
+  provider:
+    weight: 200  # Provider with higher weight receives more requests
+```
+
+**Check Provider Weights:**
+```bash
+# In ZooKeeper
+zkCli.sh -server localhost:2181
+get /dubbo/com.example.service.UserService/providers/dubbo://...:20880?weight=200
+# Check weight parameter
+```
+
+**Load Balancing Strategies:**
+
+| Strategy | Description | Use Case |
+| --- | --- | --- |
+| **Random** | Random selection | Default (even distribution) |
+| **RoundRobin** | Round-robin selection | Even distribution |
+| **LeastActive** | Select least busy | **Load-aware** (recommended) |
+| **ConsistentHash** | Hash-based selection | Sticky sessions |
+
+---
+
+**Tổng cộng: ~2,800+ lines** kiến thức Distributed Systems toàn diện với các vấn đề thực tế, giải pháp chi tiết, code examples và best practices!
+
+---
+
 *Kết thúc Part 6 - Distributed Systems*
 
